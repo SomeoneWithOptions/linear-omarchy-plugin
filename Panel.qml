@@ -29,6 +29,11 @@ Panel {
 
   readonly property bool canSubmit: draftTitle.trim() !== ""
 
+  // The bar sizes each slot from its item's implicit size, so without these
+  // the button renders into a zero-width slot and the icon never appears.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   // `omarchy bar set` writes layout-entry values as strings, so a stored
   // "false" arrives here as a truthy string. Accept either form.
   readonly property bool frameStyleEnabled: {
