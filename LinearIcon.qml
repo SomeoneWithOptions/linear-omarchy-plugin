@@ -1,12 +1,9 @@
 import QtQuick
+import QtQuick.Shapes
 import qs.Commons
 
-// The Linear mark, drawn from primitives rather than an SVG so it stays crisp
-// in a bar slot at any font scale (same approach as TailscaleIcon).
-//
-// Three parallel chords of increasing then decreasing length, rotated 45°.
-// Rotating the whole stack keeps the geometry to one transform instead of
-// three positioned-and-rotated bars.
+// The Linear mark, drawn as a vector shape using QtQuick.Shapes CurveRenderer
+// for razor-sharp antialiasing at any DPI or bar font scale.
 Item {
   id: root
 
@@ -18,27 +15,23 @@ Item {
   implicitWidth: iconSize
   implicitHeight: iconSize
 
-  readonly property real thickness: Math.max(1.5, iconSize * 0.15)
-  readonly property real barGap: Math.max(1, iconSize * 0.15)
-  readonly property real longBar: iconSize * 0.95
-  readonly property real shortBar: iconSize * 0.62
-
-  Column {
+  Shape {
     anchors.centerIn: parent
-    rotation: -45
-    spacing: root.barGap
+    width: root.iconSize
+    height: root.iconSize
+    preferredRendererType: Shape.CurveRenderer
+    asynchronous: false
 
-    Bar { barWidth: root.shortBar }
-    Bar { barWidth: root.longBar }
-    Bar { barWidth: root.shortBar }
-  }
+    ShapePath {
+      strokeWidth: 0
+      strokeColor: "transparent"
+      fillColor: root.color
+      scale: Qt.size(root.iconSize / 24, root.iconSize / 24)
 
-  component Bar: Rectangle {
-    property real barWidth: 0
-    anchors.horizontalCenter: parent.horizontalCenter
-    width: barWidth
-    height: root.thickness
-    radius: height / 2
-    color: root.color
+      PathSvg {
+        path: "M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"
+      }
+    }
   }
 }
+

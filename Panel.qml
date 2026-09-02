@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -92,7 +93,7 @@ Panel {
       Item {
         LinearIcon {
           anchors.centerIn: parent
-          iconSize: Style.space(11)
+          iconSize: Style.space(12)
           color: root.barForeground
         }
       }
@@ -124,7 +125,7 @@ Panel {
     // outside the card lands on the panel and dismisses it.
     dismissOnOutsideClick: true
     frameStyle: root.frameStyleEnabled
-    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(320))
 
     // The title field owns the keyboard while it has focus, so the catcher's
@@ -139,12 +140,13 @@ Panel {
       Column {
         id: column
         width: parent.width
-        spacing: Style.space(14)
+        spacing: Style.space(12)
 
         PanelHero {
           width: parent.width
           title: "New issue"
-          meta: root.targetLabel
+          detail: root.targetLabel
+          meta: "Linear"
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -159,7 +161,11 @@ Panel {
           id: titleField
           width: parent.width
           foreground: root.foreground
-          placeholderText: "Issue title"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.subtitle
+          horizontalPadding: Style.space(12)
+          verticalPadding: Style.space(9)
+          placeholderText: "Issue title…"
           text: root.draftTitle
           onTextChanged: root.draftTitle = text
           onAccepted: root.submit()
@@ -171,33 +177,111 @@ Panel {
           }
         }
 
-        Row {
+        PanelSeparator {
           width: parent.width
-          spacing: Style.space(6)
+          foreground: root.foreground
+          strength: 0.1
+        }
 
-          Text {
-            textFormat: Text.PlainText
-            text: root.canSubmit ? "Enter to create" : "Type a title to create"
-            color: root.canSubmit ? root.foreground : root.dim
-            opacity: root.canSubmit ? 0.85 : 1
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(8)
+
+          Item {
+            implicitWidth: submitRow.implicitWidth
+            implicitHeight: submitRow.implicitHeight
+            Layout.alignment: Qt.AlignVCenter
+
+            Row {
+              id: submitRow
+              spacing: Style.space(6)
+
+              BorderSurface {
+                implicitWidth: submitCapText.implicitWidth + Style.space(10)
+                implicitHeight: Style.space(18)
+                radius: Math.max(0, Math.min(Style.cornerRadius, Style.space(4)))
+                color: root.canSubmit
+                  ? (submitMouse.containsMouse ? Style.pressedFillFor(root.foreground, Color.accent) : Style.selectedFillFor(root.foreground, Color.accent))
+                  : Style.normalFillFor(root.foreground, Color.accent)
+                borderSpec: Border.controlSpec(root.canSubmit ? (submitMouse.containsMouse ? "focus" : "selected") : "normal", root.foreground, Color.accent)
+
+                Text {
+                  id: submitCapText
+                  anchors.centerIn: parent
+                  text: "↵ Enter"
+                  color: root.canSubmit ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.canSubmit ? "Create issue" : "Type title to create"
+                color: root.canSubmit ? root.foreground : root.dim
+                opacity: root.canSubmit ? 0.9 : 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            MouseArea {
+              id: submitMouse
+              anchors.fill: parent
+              cursorShape: root.canSubmit ? Qt.PointingHandCursor : Qt.ArrowCursor
+              enabled: root.canSubmit
+              onClicked: root.submit()
+            }
           }
 
-          Text {
-            textFormat: Text.PlainText
-            text: "·"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
+          Item { Layout.fillWidth: true }
 
-          Text {
-            textFormat: Text.PlainText
-            text: "Esc to close"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+          Item {
+            implicitWidth: cancelRow.implicitWidth
+            implicitHeight: cancelRow.implicitHeight
+            Layout.alignment: Qt.AlignVCenter
+
+            Row {
+              id: cancelRow
+              spacing: Style.space(6)
+
+              BorderSurface {
+                implicitWidth: escCapText.implicitWidth + Style.space(10)
+                implicitHeight: Style.space(18)
+                radius: Math.max(0, Math.min(Style.cornerRadius, Style.space(4)))
+                color: cancelMouse.containsMouse
+                  ? Style.hoverFillFor(root.foreground, Color.accent)
+                  : Style.normalFillFor(root.foreground, Color.accent)
+                borderSpec: Border.controlSpec(cancelMouse.containsMouse ? "hover-cursor" : "normal", root.foreground, Color.accent)
+
+                Text {
+                  id: escCapText
+                  anchors.centerIn: parent
+                  text: "Esc"
+                  color: cancelMouse.containsMouse ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Cancel"
+                color: cancelMouse.containsMouse ? root.foreground : root.dim
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            MouseArea {
+              id: cancelMouse
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.close()
+            }
           }
         }
       }
