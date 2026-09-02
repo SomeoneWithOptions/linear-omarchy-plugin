@@ -1,0 +1,169 @@
+#!/bin/bash
+
+# One-time setup for the Linear bar plugin.
+#
+# Usage:
+#   omarchy-linear-setup key                  store the API key in the keyring
+#   omarchy-linear-setup check                verify the key and show the account
+#   omarchy-linear-setup list                 list teams and their projects
+#   omarchy-linear-setup use <team> <project> write config.lua for that target
+#
+# Kept separate from omarchy-linear-issue-create so the hot path the bar calls
+# has no setup code in it.
+
+set -euo pipefail
+
+readonly API_URL="https://api.linear.app/graphql"
+readonly KEYRING_SERVICE="linear-omarchy"
+readonly KEYRING_ACCOUNT="api"
+
+CONFIG=${LINEAR_OMARCHY_CONFIG:-$HOME/.config/omarchy/linear/config.lua}
+CACHE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/linear
+TOKEN_FILE=${LINEAR_OMARCHY_TOKEN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linear/token}
+TOKEN=""
+
+die() {
+  echo "$1" >&2
+  exit 1
+}
+
+usage() {
+  sed -n '3,11p' "$0" | sed 's/^# \?//'
+}
+
+read_token() {
+  local token=""
+
+  if command -v secret-tool >/dev/null 2>&1; then
+    token=$(secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null || true)
+  fi
+
+  if [[ -z $token && -f $TOKEN_FILE ]]; then
+    local perms
+    perms=$(stat -c '%a' "$TOKEN_FILE")
+    [[ $perms == 600 || $perms == 400 ]] ||
+      die "Refusing to read $TOKEN_FILE: mode is $perms, expected 600"
+    token=$(<"$TOKEN_FILE")
+  fi
+
+  token=${token//[$'\n\r']/}
+  [[ -n $token ]] || die "No API key stored. Run: $(basename "$0") key"
+  printf '%s' "$token"
+}
+
+api() {
+  printf 'header = "Authorization: %s"\n' "$TOKEN" |
+    curl -sS --max-time 20 --config - \
+      -X POST "$API_URL" \
+      -H "Content-Type: application/json" \
+      --data-binary "$1"
+}
+
+query() {
+  local response err
+  response=$(api "$(jq -n --arg q "$1" '{query: $q}')") || die "Could not reach the Linear API"
+  err=$(jq -r '.errors[0].message // empty' <<<"$response")
+  [[ -z $err ]] || die "Linear API error: $err"
+  printf '%s' "$response"
+}
+
+cmd_key() {
+  command -v secret-tool >/dev/null 2>&1 ||
+    die "secret-tool not installed; write the key to $TOKEN_FILE with mode 600 instead"
+
+  local key=""
+  read -rsp "Linear API key: " key
+  echo
+  [[ -n $key ]] || die "No key entered"
+
+  printf '%s' "$key" |
+    secret-tool store --label='Linear API key' service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT"
+  echo "Stored in the login keyring."
+}
+
+cmd_check() {
+  TOKEN=$(read_token)
+  query '{ viewer { name email } }' |
+    jq -r '"Authenticated as \(.data.viewer.name) <\(.data.viewer.email)>"'
+}
+
+cmd_list() {
+  TOKEN=$(read_token)
+  query '{ teams(first: 100) { nodes { name key projects(first: 200) { nodes { name state } } } } }' |
+    jq -r '.data.teams.nodes[]
+      | "\(.name) [\(.key)]",
+        (if (.projects.nodes | length) == 0
+         then "    (no projects)"
+         else (.projects.nodes[] | "    \(.name)  ·  \(.state)")
+         end),
+        ""'
+}
+
+cmd_use() {
+  local team=${1-} project=${2-}
+  [[ -n $team && -n $project ]] || die "Usage: $(basename "$0") use <team> <project>"
+
+  TOKEN=$(read_token)
+  local response team_id project_id
+  response=$(query '{ teams(first: 100) { nodes { id name projects(first: 200) { nodes { id name } } } } }')
+
+  team_id=$(jq -r --arg t "$team" '
+    .data.teams.nodes[] | select((.name | ascii_downcase) == ($t | ascii_downcase)) | .id
+  ' <<<"$response" | head -1)
+  [[ -n $team_id ]] || die "No team named \"$team\". Run: $(basename "$0") list"
+
+  project_id=$(jq -r --arg t "$team" --arg p "$project" '
+    .data.teams.nodes[]
+    | select((.name | ascii_downcase) == ($t | ascii_downcase))
+    | .projects.nodes[]
+    | select((.name | ascii_downcase) == ($p | ascii_downcase))
+    | .id
+  ' <<<"$response" | head -1)
+  [[ -n $project_id ]] || die "No project named \"$project\" in team \"$team\". Run: $(basename "$0") list"
+
+  mkdir -p "$(dirname "$CONFIG")"
+  if [[ -f $CONFIG ]]; then
+    cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
+    echo "Backed up the existing config."
+  fi
+
+  cat >"$CONFIG" <<LUA
+-- Linear bar plugin configuration.
+-- Names are the source of truth; the plugin caches the matching UUIDs in
+-- ${CACHE_DIR#"$HOME"/}/ids.json and re-resolves them whenever a name changes.
+return {
+  team = "$team",
+  project = "$project",
+
+  -- Uncomment to pin the UUIDs and skip name resolution entirely:
+  -- team_id = "$team_id",
+  -- project_id = "$project_id",
+
+  -- Default priority for new issues: 0 none, 1 urgent, 2 high, 3 normal, 4 low.
+  -- priority = 3,
+}
+LUA
+
+  mkdir -p "$CACHE_DIR"
+  jq -n --arg team "$team" --arg project "$project" \
+    --arg team_id "$team_id" --arg project_id "$project_id" \
+    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id}' \
+    >"$CACHE_DIR/ids.json.tmp"
+  chmod 600 "$CACHE_DIR/ids.json.tmp"
+  mv "$CACHE_DIR/ids.json.tmp" "$CACHE_DIR/ids.json"
+
+  echo "Wrote $CONFIG"
+  echo "Target: $team › $project"
+}
+
+case ${1-} in
+key) cmd_key ;;
+check) cmd_check ;;
+list) cmd_list ;;
+use)
+  shift
+  cmd_use "$@"
+  ;;
+-h | --help | "") usage ;;
+*) die "Unknown command: $1" ;;
+esac

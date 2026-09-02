@@ -1,0 +1,221 @@
+#!/bin/bash
+
+# Create a Linear issue in the team and project named in config.lua, then
+# report the result as a desktop notification whose click opens the ticket.
+#
+# Usage:
+#   omarchy-linear-issue-create "Fix the login redirect"
+#   omarchy-linear-issue-create --target      # print "Team › Project", no network
+#
+# The API key comes from the login keyring (secret-tool), falling back to a
+# 0600 file. It is never passed on a command line, so it stays out of the
+# process table that any other process running as this user can read.
+
+set -euo pipefail
+
+readonly API_URL="https://api.linear.app/graphql"
+readonly GLYPH=""   # nf-cod-issues
+readonly KEYRING_SERVICE="linear-omarchy"
+readonly KEYRING_ACCOUNT="api"
+
+CONFIG=${LINEAR_OMARCHY_CONFIG:-$HOME/.config/omarchy/linear/config.lua}
+CACHE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/linear
+CACHE=$CACHE_DIR/ids.json
+TOKEN_FILE=${LINEAR_OMARCHY_TOKEN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linear/token}
+NOTIFIER=$(command -v omarchy-notification-send || echo "${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-notification-send")
+
+mode=create
+cfg_team=""
+cfg_project=""
+cfg_team_id=""
+cfg_project_id=""
+cfg_priority=""
+team_id=""
+project_id=""
+TOKEN=""
+
+# Failures reach the user as a notification, because the caller is a bar popup
+# that has already closed and nobody is watching stderr. --target runs on every
+# panel open, so it stays quiet.
+die() {
+  echo "$1" >&2
+  if [[ $mode == create ]]; then
+    "$NOTIFIER" -g "$GLYPH" -u critical --app-name Linear "Linear: issue not created" "$1" 2>/dev/null || true
+  fi
+  exit 1
+}
+
+read_config() {
+  [[ -f $CONFIG ]] || die "No config at $CONFIG"
+
+  local out
+  out=$(LINEAR_OMARCHY_CONFIG="$CONFIG" lua -e '
+    local path = os.getenv("LINEAR_OMARCHY_CONFIG")
+    local ok, cfg = pcall(dofile, path)
+    if not ok then io.stderr:write("config error: " .. tostring(cfg) .. "\n"); os.exit(1) end
+    if type(cfg) ~= "table" then io.stderr:write("config must return a table\n"); os.exit(1) end
+    local function put(k, v) if v ~= nil and v ~= "" then io.write(k, "\t", tostring(v), "\n") end end
+    put("team", cfg.team)
+    put("project", cfg.project)
+    put("team_id", cfg.team_id)
+    put("project_id", cfg.project_id)
+    put("priority", cfg.priority)
+  ') || die "Could not read $CONFIG"
+
+  local key value
+  while IFS=$'\t' read -r key value; do
+    case $key in
+    team) cfg_team=$value ;;
+    project) cfg_project=$value ;;
+    team_id) cfg_team_id=$value ;;
+    project_id) cfg_project_id=$value ;;
+    priority) cfg_priority=$value ;;
+    esac
+  done <<<"$out"
+
+  [[ -n $cfg_team || -n $cfg_team_id ]] || die "config.lua needs a team name or team_id"
+}
+
+read_token() {
+  local token=""
+
+  if command -v secret-tool >/dev/null 2>&1; then
+    token=$(secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null || true)
+  fi
+
+  # A key on disk is only trustworthy while it is unreadable by anyone else,
+  # so a loosened mode is an error rather than a warning.
+  if [[ -z $token && -f $TOKEN_FILE ]]; then
+    local perms
+    perms=$(stat -c '%a' "$TOKEN_FILE")
+    [[ $perms == 600 || $perms == 400 ]] ||
+      die "Refusing to read $TOKEN_FILE: mode is $perms, expected 600"
+    token=$(<"$TOKEN_FILE")
+  fi
+
+  token=${token//[$'\n\r']/}
+  [[ -n $token ]] || die "No Linear API key stored. See the plugin README."
+  printf '%s' "$token"
+}
+
+# The Authorization header goes in over stdin as a curl config file, keeping
+# the key out of argv.
+api() {
+  printf 'header = "Authorization: %s"\n' "$TOKEN" |
+    curl -sS --max-time 20 --config - \
+      -X POST "$API_URL" \
+      -H "Content-Type: application/json" \
+      --data-binary "$1"
+}
+
+api_error() {
+  jq -r '.errors[0].message // empty' <<<"$1"
+}
+
+lookup_ids() {
+  local query payload response err
+  query='query { teams(first: 100) { nodes { id name projects(first: 200) { nodes { id name } } } } }'
+  payload=$(jq -n --arg q "$query" '{query: $q}')
+
+  response=$(api "$payload") || die "Could not reach the Linear API"
+  err=$(api_error "$response")
+  [[ -z $err ]] || die "$err"
+
+  team_id=$(jq -r --arg t "$cfg_team" '
+    .data.teams.nodes[] | select((.name | ascii_downcase) == ($t | ascii_downcase)) | .id
+  ' <<<"$response" | head -1)
+  [[ -n $team_id ]] || die "No Linear team named \"$cfg_team\""
+
+  project_id=$(jq -r --arg t "$cfg_team" --arg p "$cfg_project" '
+    .data.teams.nodes[]
+    | select((.name | ascii_downcase) == ($t | ascii_downcase))
+    | .projects.nodes[]
+    | select((.name | ascii_downcase) == ($p | ascii_downcase))
+    | .id
+  ' <<<"$response" | head -1)
+  [[ -n $project_id ]] || die "No project named \"$cfg_project\" in team \"$cfg_team\""
+
+  mkdir -p "$CACHE_DIR"
+  jq -n --arg team "$cfg_team" --arg project "$cfg_project" \
+    --arg team_id "$team_id" --arg project_id "$project_id" \
+    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id}' >"$CACHE.tmp"
+  chmod 600 "$CACHE.tmp"
+  mv "$CACHE.tmp" "$CACHE"
+}
+
+# Names in config.lua are the source of truth; UUIDs are a cache keyed by those
+# names, so renaming a project in Linear re-resolves instead of going stale.
+resolve_ids() {
+  if [[ -n $cfg_team_id && -n $cfg_project_id ]]; then
+    team_id=$cfg_team_id
+    project_id=$cfg_project_id
+    return
+  fi
+
+  if [[ -f $CACHE ]] &&
+    [[ $(jq -r --arg t "$cfg_team" --arg p "$cfg_project" \
+      'if .team == $t and .project == $p then "hit" else "miss" end' "$CACHE" 2>/dev/null) == hit ]]; then
+    team_id=$(jq -r '.team_id // empty' "$CACHE")
+    project_id=$(jq -r '.project_id // empty' "$CACHE")
+    [[ -n $team_id && -n $project_id ]] && return 0
+  fi
+
+  lookup_ids
+}
+
+create_issue() {
+  local title=$1 query payload response err identifier url
+  query='mutation CreateIssue($input: IssueCreateInput!) {
+    issueCreate(input: $input) { success issue { identifier url } }
+  }'
+
+  payload=$(jq -n \
+    --arg q "$query" \
+    --arg title "$title" \
+    --arg team "$team_id" \
+    --arg project "$project_id" \
+    --argjson priority "${cfg_priority:-null}" '
+    { query: $q,
+      variables: { input: (
+        { title: $title, teamId: $team, projectId: $project }
+        + (if $priority == null then {} else { priority: $priority } end)
+      ) } }')
+
+  response=$(api "$payload") || die "Could not reach the Linear API"
+  err=$(api_error "$response")
+  [[ -z $err ]] || die "$err"
+  [[ $(jq -r '.data.issueCreate.success // false' <<<"$response") == true ]] ||
+    die "Linear rejected the issue"
+
+  identifier=$(jq -r '.data.issueCreate.issue.identifier // empty' <<<"$response")
+  url=$(jq -r '.data.issueCreate.issue.url // empty' <<<"$response")
+  [[ -n $identifier && -n $url ]] || die "Linear returned no issue"
+
+  "$NOTIFIER" -g "$GLYPH" -u normal --app-name Linear \
+    "$identifier created" "$title" --exec xdg-open "$url"
+  echo "$identifier $url"
+}
+
+if [[ ${1-} == "--target" ]]; then
+  mode=target
+  shift
+fi
+
+if [[ ${1-} == "-h" || ${1-} == "--help" ]]; then
+  sed -n '3,12p' "$0" | sed 's/^# \?//'
+  exit 0
+fi
+
+read_config
+
+if [[ $mode == target ]]; then
+  printf '%s › %s\n' "${cfg_team:-Linear}" "${cfg_project:-no project}"
+  exit 0
+fi
+
+title=$(printf '%s' "${*-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+[[ -n $title ]] || die "Empty issue title"
+
+TOKEN=$(read_token)
+resolve_ids
+create_issue "$title"

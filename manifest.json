@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "andres.linear",
+  "name": "Linear",
+  "version": "1.0.0",
+  "author": "Andres",
+  "license": "MIT",
+  "description": "Create Linear issues from the Omarchy bar. Type a title, press Enter, get a ticket.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Linear",
+    "description": "Create a Linear issue in a preset team and project.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
