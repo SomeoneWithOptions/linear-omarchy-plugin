@@ -34,7 +34,10 @@ import qs.Ui
 // Outside-click dismissal: an overlay MouseArea catches clicks, with the
 // QsWindow.mask subtracting the bar strip so clicks on the bar still
 // reach the bar widgets (activePopout coordinator hands off to another
-// popup if the user clicks a different bar icon).
+// popup if the user clicks a different bar icon). Set
+// `dismissOnOutsideClick: false` for a panel that survives clicking away and
+// only closes on Esc (or the bar icon / IPC); its input region then covers
+// the card alone, so clicks elsewhere reach and focus the window below.
 PanelWindow {
   id: root
 
@@ -56,6 +59,11 @@ PanelWindow {
   // "left" | "right" | "none". Pins the card to a screen edge instead of
   // centering it under its own bar icon.
   property string pinEdge: "none"
+  // When false the panel stays open until it is closed explicitly (Esc while
+  // focused, the bar icon, IPC). Clicks outside the card go straight to
+  // whatever is underneath, so the input region shrinks to the card itself and
+  // the dismissal surfaces on other outputs are never created.
+  property bool dismissOnOutsideClick: true
   property int gap: frameStyle ? -1 : Style.gapsOut  // -1 overlaps the bar so the panel grows from the frame
   property int frameInset: 10  // matches Hyprland gaps_out
   // Distance from the screen edge a pinned card sits at. The frame look lines
@@ -164,9 +172,26 @@ PanelWindow {
     var actual = (root.barPos === "top" || root.barPos === "bottom") ? root.barH : root.barW
     return Math.max(bar.barSize, actual) + root.gap
   }
+
+  // A persistent panel only claims the card (plus the frame joins beside it),
+  // so every click outside it reaches the window below and can focus it. The
+  // band follows `reveal` so the region matches what is actually drawn while
+  // the card grows and shrinks.
+  readonly property int _cardMaskX: attachedLeft ? 0 : Math.max(0, Math.round(cardOrigin.x - Style.cornerRadius))
+  readonly property int _cardMaskWidth: {
+    var right = attachedRight ? screenW : Math.min(screenW, Math.round(cardOrigin.x + contentWidth + Style.cornerRadius))
+    return Math.max(0, right - _cardMaskX)
+  }
   mask: Region {
-    width: root.screenW
-    height: root.screenH
+    width: root.dismissOnOutsideClick ? root.screenW : 0
+    height: root.dismissOnOutsideClick ? root.screenH : 0
+
+    Region {
+      x: root.dismissOnOutsideClick ? 0 : root._cardMaskX
+      y: root.dismissOnOutsideClick ? 0 : Math.round(root.cardOrigin.y)
+      width: root.dismissOnOutsideClick ? 0 : root._cardMaskWidth
+      height: root.dismissOnOutsideClick ? 0 : Math.round((root.contentHeight + Style.cornerRadius) * root.reveal)
+    }
   }
 
   // Track every layout change between the bar's contentItem and the
@@ -339,13 +364,14 @@ PanelWindow {
   // screen except the bar strip, which is masked out). The card has its
   // own MouseArea below so clicks on it don't bubble up here. Disabled
   // during the fade-out so the dying overlay doesn't swallow clicks that
-  // were meant for the apps behind it.
+  // were meant for the apps behind it, and disabled outright for a
+  // persistent panel, whose input region excludes everything but the card.
   MouseArea {
     id: dismissArea
     anchors.fill: parent
-    enabled: root.open
+    enabled: root.open && root.dismissOnOutsideClick
     acceptedButtons: Qt.AllButtons
-    hoverEnabled: true
+    hoverEnabled: root.dismissOnOutsideClick
     property bool hoveringBar: false
     cursorShape: hoveringBar ? Qt.PointingHandCursor : Qt.ArrowCursor
 
@@ -404,7 +430,7 @@ PanelWindow {
   // Keyboard focus is None: these must catch the pointer without taking focus
   // from the panel when the cursor merely crosses onto their output.
   Variants {
-    model: root.open ? Quickshell.screens : []
+    model: root.open && root.dismissOnOutsideClick ? Quickshell.screens : []
 
     delegate: Component {
       PanelWindow {
@@ -538,10 +564,15 @@ PanelWindow {
     opacity: 1
 
     // Swallow clicks on the card so they don't bubble to the dismissal
-    // MouseArea behind us.
+    // MouseArea behind us. Pressing the card also restores Qt active focus to
+    // `focusTarget`: the compositor hands keyboard focus back to this surface
+    // on the click, but a persistent panel can have lost it to another window
+    // long ago, and Esc has to land on the panel again right away. Content
+    // items sit above this area, so a press on a field still goes to the field.
     MouseArea {
       anchors.fill: parent
       acceptedButtons: Qt.AllButtons
+      onPressed: if (root.open && root.focusTarget) root.focusTarget.forceActiveFocus()
     }
 
     Item {

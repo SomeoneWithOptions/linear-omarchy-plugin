@@ -94,6 +94,10 @@ Panel {
     open: root.opened
     focusTarget: titleField
     pinEdge: "left"
+    // A capture field is worth nothing if a stray click throws the draft away:
+    // stay open across clicks into other windows, and close only on Esc (or
+    // the bar icon / IPC). Click the card to hand focus back to the field.
+    dismissOnOutsideClick: false
     frameStyle: root.frameStyleEnabled
     contentWidth: panel.fittedContentWidth(Style.space(360))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(320))
@@ -165,7 +169,7 @@ Panel {
 
           Text {
             textFormat: Text.PlainText
-            text: "Esc to cancel"
+            text: "Esc to close"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
