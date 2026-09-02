@@ -19,7 +19,8 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "frameStyle": true
+      "frameStyle": true,
+      "panelPosition": "top-left"
     },
     "schema": [
       {
@@ -28,6 +29,19 @@
         "label": "Frame styling",
         "description": "Grow the panel out of the desktop frame with concave joins. Off gives a plain bordered card below the bar.",
         "defaultValue": true
+      },
+      {
+        "key": "panelPosition",
+        "type": "enum",
+        "label": "Panel position",
+        "description": "Screen corner the capture field opens in. Frame styling follows the corner, so the panel always grows out of the desktop frame.",
+        "options": [
+          "top-left",
+          "top-right",
+          "bottom-left",
+          "bottom-right"
+        ],
+        "defaultValue": "top-left"
       }
     ]
   }

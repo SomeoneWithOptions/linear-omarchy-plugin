@@ -59,6 +59,12 @@ PanelWindow {
   // "left" | "right" | "none". Pins the card to a screen edge instead of
   // centering it under its own bar icon.
   property string pinEdge: "none"
+  // "top" | "bottom" | "none". "bottom" drops the card onto the screen's
+  // bottom edge and grows it upward; every frame decoration mirrors with it,
+  // so the card reads as growing out of the desktop frame's bottom corners
+  // instead of out of the bar strip.
+  property string pinVerticalEdge: "none"
+  readonly property bool pinnedBottom: pinVerticalEdge === "bottom"
   // When false the panel stays open until it is closed explicitly (Esc while
   // focused, the bar icon, IPC). Clicks outside the card go straight to
   // whatever is underneath, so the input region shrinks to the card itself and
@@ -69,9 +75,16 @@ PanelWindow {
   // Distance from the screen edge a pinned card sits at. The frame look lines
   // up with the desktop frame; the plain look uses the ordinary popup margin.
   readonly property int edgeInset: frameStyle ? frameInset : margin
-  readonly property bool attachedRight: frameStyle && barPos === "top"
+  // A bottom-pinned frame card sits flush against the screen edge, the way a
+  // bar-attached one sits flush against the bar strip.
+  readonly property int bottomEdgeInset: frameStyle ? 0 : margin
+  // The frame look is drawn against the top strip and the desktop frame's
+  // corner nooks, both of which assume a top bar. Any other bar position falls
+  // back to the plain bordered card.
+  readonly property bool framed: frameStyle && barPos === "top"
+  readonly property bool attachedRight: framed
      && Math.abs(cardOrigin.x + contentWidth - (screenW - frameInset)) < 2
-  readonly property bool attachedLeft: frameStyle && barPos === "top"
+  readonly property bool attachedLeft: framed
      && Math.abs(cardOrigin.x - frameInset) < 2
   readonly property bool reduceMotion: Quickshell.env("DESKTOP_FRAME_REDUCED_MOTION") === "1"
   // Keep reveal imperative: mapping and animating in the same turn lets
@@ -188,9 +201,9 @@ PanelWindow {
 
     Region {
       x: root.dismissOnOutsideClick ? 0 : root._cardMaskX
-      y: root.dismissOnOutsideClick ? 0 : Math.round(root.cardOrigin.y)
+      y: root.dismissOnOutsideClick ? 0 : Math.round(revealClip.y)
       width: root.dismissOnOutsideClick ? 0 : root._cardMaskWidth
-      height: root.dismissOnOutsideClick ? 0 : Math.round((root.contentHeight + Style.cornerRadius) * root.reveal)
+      height: root.dismissOnOutsideClick ? 0 : Math.round(revealClip.height)
     }
   }
 
@@ -222,9 +235,11 @@ PanelWindow {
     ? Math.max(120, screenW - ((barPos === "left" || barPos === "right") ? barW + gap + margin : margin * 2))
     : 0
   readonly property real availableCardHeight: screenH > 0
-    ? Math.max(120, screenH - ((barPos === "top" || barPos === "bottom")
-      ? barH + gap + ((frameStyle && barPos === "top") ? frameInset + Style.cornerRadius : margin)
-      : margin * 2))
+    ? Math.max(120, pinnedBottom
+      ? screenH - barH - gap - (frameStyle ? frameInset : margin)
+      : screenH - ((barPos === "top" || barPos === "bottom")
+        ? barH + gap + ((frameStyle && barPos === "top") ? frameInset + Style.cornerRadius : margin)
+        : margin * 2))
     : 0
   readonly property real verticalContentInset: padding * 2 + Border.top(borderSpec) + Border.bottom(borderSpec)
 
@@ -289,11 +304,15 @@ PanelWindow {
     // they don't.
     if (pinEdge === "left") x = edgeInset
     else if (pinEdge === "right") x = screenW - contentWidth - edgeInset
+    // Same idea on the other axis: a bottom-pinned card ignores the bar it
+    // hangs from and lands on the screen's bottom edge.
+    if (pinnedBottom) y = screenH - contentHeight - bottomEdgeInset
 
     var leftMargin = pinEdge === "left" ? edgeInset : margin
     var rightMargin = (frameStyle && barPos === "top") ? frameInset : margin
+    var bottomMargin = pinnedBottom ? bottomEdgeInset : margin
     x = Math.max(leftMargin, Math.min(x, screenW - contentWidth - rightMargin))
-    y = Math.max(margin, Math.min(y, screenH - contentHeight - margin))
+    y = Math.max(margin, Math.min(y, screenH - contentHeight - bottomMargin))
     return Qt.point(Math.round(x), Math.round(y))
   }
 
@@ -465,35 +484,60 @@ PanelWindow {
 
   // --- card ----------------------------------------------------------------
 
+  // Grows from the edge the card is attached to: down from the bar strip, or
+  // up from the screen's bottom edge. The extra corner-radius band is where the
+  // concave joins at the card's free end are drawn.
   Item {
     id: revealClip
     x: 0
-    y: root.cardOrigin.y
+    y: root.pinnedBottom
+      ? Math.round(root.cardOrigin.y + root.contentHeight - height)
+      : Math.round(root.cardOrigin.y)
     width: root.screenW
     height: Math.round((root.contentHeight + Style.cornerRadius) * root.reveal)
     clip: true
   }
 
+  // Frame joins live in `revealClip` coordinates. `attachedEdgeJoinY` is the
+  // edge the card grows out of; `freeEdgeJoinY` is where a side bridge to the
+  // screen edge stops and curves away.
+  readonly property int frameJoinSize: Style.cornerRadius
+  readonly property int attachedEdgeJoinY: pinnedBottom
+    ? Math.round(card.y + card.height - frameJoinSize) : Math.round(card.y)
+  readonly property int freeEdgeJoinY: pinnedBottom
+    ? Math.round(card.y - frameJoinSize + 2) : Math.round(card.y + card.height - 2)
+
   FrameJoin {
+    id: leftFrameJoin
     parent: revealClip
-    visible: root.frameStyle && root.barPos === "top" && !root.attachedLeft
+    visible: root.framed && !root.attachedLeft
     x: card.x - width + 2
-    y: 0
+    y: root.attachedEdgeJoinY
     opacity: card.opacity
-    cornerRadius: Style.cornerRadius
+    cornerRadius: root.frameJoinSize
     frameColor: Color.popups.background
+    transform: Scale {
+      origin.x: leftFrameJoin.width / 2
+      origin.y: leftFrameJoin.height / 2
+      yScale: root.pinnedBottom ? -1 : 1
+    }
   }
 
   FrameJoin {
-    id: topRightFrameJoin
+    id: rightFrameJoin
     parent: revealClip
-    visible: root.frameStyle && root.barPos === "top" && !root.attachedRight
+    visible: root.framed && !root.attachedRight
     x: card.x + card.width - 2
-    y: 0
+    y: root.attachedEdgeJoinY
     opacity: card.opacity
-    cornerRadius: Style.cornerRadius
+    cornerRadius: root.frameJoinSize
     frameColor: Color.popups.background
-    transform: Scale { origin.x: topRightFrameJoin.width / 2; xScale: -1 }
+    transform: Scale {
+      origin.x: rightFrameJoin.width / 2
+      origin.y: rightFrameJoin.height / 2
+      xScale: -1
+      yScale: root.pinnedBottom ? -1 : 1
+    }
   }
 
   // A panel pinned to the right runs into the screen edge instead: the strip
@@ -502,7 +546,7 @@ PanelWindow {
     parent: revealClip
     visible: root.attachedRight
     x: card.x + card.width - 2
-    y: 0
+    y: card.y
     width: root.frameInset + 2
     height: card.height
     color: Color.popups.background
@@ -510,13 +554,19 @@ PanelWindow {
   }
 
   FrameJoin {
+    id: rightBridgeFrameJoin
     parent: revealClip
     visible: root.attachedRight
     x: root.screenW - width
-    y: card.height - 2
+    y: root.freeEdgeJoinY
     opacity: card.opacity
-    cornerRadius: Style.cornerRadius
+    cornerRadius: root.frameJoinSize
     frameColor: Color.popups.background
+    transform: Scale {
+      origin.x: rightBridgeFrameJoin.width / 2
+      origin.y: rightBridgeFrameJoin.height / 2
+      yScale: root.pinnedBottom ? -1 : 1
+    }
   }
 
   // Mirror of the two items above for a panel pinned to the left edge.
@@ -524,7 +574,7 @@ PanelWindow {
     parent: revealClip
     visible: root.attachedLeft
     x: 0
-    y: 0
+    y: card.y
     width: card.x + 2
     height: card.height
     color: Color.popups.background
@@ -532,35 +582,40 @@ PanelWindow {
   }
 
   FrameJoin {
-    id: bottomLeftFrameJoin
+    id: leftBridgeFrameJoin
     parent: revealClip
     visible: root.attachedLeft
     x: 0
-    y: card.height - 2
+    y: root.freeEdgeJoinY
     opacity: card.opacity
-    cornerRadius: Style.cornerRadius
+    cornerRadius: root.frameJoinSize
     frameColor: Color.popups.background
-    transform: Scale { origin.x: bottomLeftFrameJoin.width / 2; xScale: -1 }
+    transform: Scale {
+      origin.x: leftBridgeFrameJoin.width / 2
+      origin.y: leftBridgeFrameJoin.height / 2
+      xScale: -1
+      yScale: root.pinnedBottom ? -1 : 1
+    }
   }
 
   BorderSurface {
     parent: revealClip
     id: card
     x: root.cardOrigin.x
-    y: 0
+    y: root.pinnedBottom ? revealClip.height - root.contentHeight : 0
     width: root.contentWidth
     height: root.contentHeight
     color: Color.popups.background
     // The frame look draws its own edges, so the card drops its border and
-    // squares off the corners that meet the bar or the screen edge.
-    readonly property bool grownFromBar: root.frameStyle && root.barPos === "top"
-    borderSpec: grownFromBar ? Border.none() : root.borderSpec
+    // squares off every corner that meets the bar strip, a bridged screen edge,
+    // or the bottom of the screen. The free corners keep the popup radius.
+    borderSpec: root.framed ? Border.none() : root.borderSpec
     padding: root.padding
     radius: Style.cornerRadius
-    topLeftRadius: grownFromBar ? 0 : Style.cornerRadius
-    topRightRadius: grownFromBar ? 0 : Style.cornerRadius
-    bottomRightRadius: root.attachedRight ? 0 : Style.cornerRadius
-    bottomLeftRadius: root.attachedLeft ? 0 : Style.cornerRadius
+    topLeftRadius: root.framed && (root.pinnedBottom ? root.attachedLeft : true) ? 0 : Style.cornerRadius
+    topRightRadius: root.framed && (root.pinnedBottom ? root.attachedRight : true) ? 0 : Style.cornerRadius
+    bottomRightRadius: root.framed && (root.pinnedBottom || root.attachedRight) ? 0 : Style.cornerRadius
+    bottomLeftRadius: root.framed && (root.pinnedBottom || root.attachedLeft) ? 0 : Style.cornerRadius
     opacity: 1
 
     // Swallow clicks on the card so they don't bubble to the dismissal
@@ -587,7 +642,9 @@ PanelWindow {
       opacity: (root.reduceMotion ? 1 : Math.min(1, root.reveal * 1.7))
         * (root.popoutSwitching ? (root.open ? 1.0 : 0) : 1.0)
       transform: Translate {
-        y: root.reduceMotion ? 0 : -(1 - root.reveal) * Style.space(8)
+        // Content trails the card, sliding in from the edge it grows out of.
+        y: root.reduceMotion ? 0
+          : (root.pinnedBottom ? 1 : -1) * (1 - root.reveal) * Style.space(8)
       }
 
       Behavior on opacity {

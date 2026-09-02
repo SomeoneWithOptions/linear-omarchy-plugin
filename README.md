@@ -81,19 +81,33 @@ shell's own schema — `omarchy bar move andres.linear --section right --index 5
 
 ## Panel styling
 
-The panel always opens in the top-left corner rather than under its bar icon,
-so the capture field is in the same place whatever the bar layout is.
+The panel opens in a screen corner rather than under its bar icon, so the capture
+field is in the same place whatever the bar layout is. It sits in the top-left
+corner by default; pick another with `panelPosition`:
 
-By default it grows out of the desktop frame: it overlaps the bar, drops its top
-border, and draws concave fillets where it meets the frame and the left screen
-edge. For a plain bordered card below the bar instead:
+```bash
+omarchy bar set andres.linear panelPosition bottom-right
+```
+
+Valid values are `top-left`, `top-right`, `bottom-left` and `bottom-right`.
+Anything else falls back to `top-left`.
+
+By default the panel grows out of the desktop frame: it drops the borders on the
+edges it is attached to, squares off those corners, and draws concave fillets
+where it leaves the frame. The decorations mirror with the position — a top
+panel overlaps the bar and grows down out of the strip, a bottom one sits flush
+on the screen's bottom edge and grows up out of the corner nook, and both bridge
+to whichever side edge they are pinned against. For a plain bordered card with
+every corner rounded instead:
 
 ```bash
 omarchy bar set andres.linear frameStyle false
 ```
 
-Note that `omarchy bar set` writes values into `shell.json` as strings, so the
-widget reads `"false"` as false as well as a real `false`.
+The frame look needs a top bar; with the bar on another edge the panel falls
+back to the plain card. Note that `omarchy bar set` writes values into
+`shell.json` as strings, so the widget reads `"false"` as false as well as a
+real `false`.
 
 ## Hacking
 
@@ -121,7 +135,7 @@ Two things cost time if you don't know them:
 | `manifest.json` | Plugin manifest (`kind: bar-widget`) |
 | `Panel.qml` | Bar button and the popup: one title field, Enter creates, Esc cancels |
 | `LinearIcon.qml` | The Linear mark, drawn from primitives so it stays crisp at any font scale |
-| `FramePanel.qml` | Popup surface, pinned to the top-left corner |
+| `FramePanel.qml` | Popup surface, pinned to a screen corner |
 | `FrameJoin.qml` | The concave fillet where the panel meets the frame and the screen edge |
 | `bin/omarchy-linear-issue-create` | Reads config and key, calls the API, sends the notification |
 | `bin/omarchy-linear-setup` | Stores the key, lists teams and projects, writes `config.lua` |

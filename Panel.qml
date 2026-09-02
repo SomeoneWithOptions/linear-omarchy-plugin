@@ -42,6 +42,18 @@ Panel {
     return value === true
   }
 
+  // Screen corner the capture field opens in. Accepts "top-left", "top-right",
+  // "bottom-left" and "bottom-right"; spaces and underscores are tolerated so a
+  // hand-edited "Top Left" still lands somewhere sane. Anything unrecognised
+  // falls back to the default top-left.
+  readonly property string panelPosition: {
+    var value = String(setting("panelPosition", "top-left")).trim().toLowerCase().replace(/[ _]+/g, "-")
+    var known = ["top-left", "top-right", "bottom-left", "bottom-right"]
+    return known.indexOf(value) >= 0 ? value : "top-left"
+  }
+  readonly property string panelPinEdge: panelPosition.indexOf("right") >= 0 ? "right" : "left"
+  readonly property string panelPinVerticalEdge: panelPosition.indexOf("bottom") === 0 ? "bottom" : "top"
+
   function submit() {
     if (!canSubmit) return
     var title = draftTitle.trim()
@@ -88,9 +100,9 @@ Panel {
     onPressed: function(buttonCode) { root.toggle() }
   }
 
-  // Pinned to the top-left corner rather than under its own icon, so the
-  // capture field always opens in the same place no matter where the widget
-  // sits in the bar.
+  // Pinned to a screen corner rather than under its own icon, so the capture
+  // field always opens in the same place no matter where the widget sits in the
+  // bar. Which corner is the `panelPosition` setting.
   FramePanel {
     id: panel
     anchorItem: button
@@ -98,7 +110,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: titleField
-    pinEdge: "left"
+    pinEdge: root.panelPinEdge
+    pinVerticalEdge: root.panelPinVerticalEdge
     // A capture field is worth nothing if a stray click throws the draft away:
     // stay open across clicks into other windows, and close only on Esc (or
     // the bar icon / IPC). Click the card to hand focus back to the field.
