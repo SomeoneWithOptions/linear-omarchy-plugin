@@ -9,15 +9,24 @@
 #
 # Usage:
 #   ./install.sh                                    from a clone
+#   ./install.sh --reconfigure                      ask again about settled steps
+#   ./install.sh --yes                              no questions, fill gaps only
 #   bash <(curl -fsSL <raw-url>/install.sh)         without one
 #
 # Run on its own it clones the plugin from git first, so the script is the only
 # file needed. Questions are read from /dev/tty, so `curl … | bash` works too.
+#
+# Re-running is safe: every step reads what is already on the machine and asks
+# only about what is missing. --yes takes each question's default, and every
+# "change the existing one?" question defaults to no, so --yes repairs a
+# half-finished install without touching a finished one.
 
 set -euo pipefail
 
 readonly REPO_URL="https://github.com/SomeoneWithOptions/linear-omarchy-plugin.git"
 readonly PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+readonly SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
+readonly CONFIG=${LINEAR_OMARCHY_CONFIG:-$HOME/.config/omarchy/linear/config.lua}
 readonly BINDINGS="$HOME/.config/hypr/bindings.lua"
 readonly BIND_BEGIN="-- >>> linear-omarchy-plugin (managed keybind) >>>"
 readonly BIND_END="-- <<< linear-omarchy-plugin <<<"
@@ -38,6 +47,14 @@ TARGET="$PLUGINS_DIR/$PLUGIN_ID"
 SETUP="$TARGET/bin/omarchy-linear-setup"
 
 step_no=0
+
+# Ask again about steps that are already settled.
+RECONFIGURE=0
+# Answer every question with its default rather than reading the terminal.
+ASSUME_YES=0
+# Set by anything that actually writes, so the shell restart can be skipped
+# when a re-run turned out to be a no-op.
+CHANGED=0
 
 # ------------------------------------------------------------------- plumbing
 
@@ -61,6 +78,10 @@ have_gum() { command -v gum >/dev/null 2>&1; }
 
 confirm() { # $1 = question, $2 = default (y/n)
   local answer default=${2:-y}
+  if ((ASSUME_YES)); then
+    [[ $default == y ]]
+    return
+  fi
   if have_gum; then
     if [[ $default == y ]]; then
       gum confirm "$1" && return 0 || return 1
@@ -76,6 +97,10 @@ confirm() { # $1 = question, $2 = default (y/n)
 choose() { # $1 = header, $2 = preselected option
   local header=$1 selected=${2-} options=() reply i=1
   mapfile -t options
+  if ((ASSUME_YES)); then
+    printf '%s\n' "${selected:-${options[0]}}"
+    return
+  fi
   if have_gum; then
     # An option can contain spaces, so --selected goes in as its own word
     # rather than through an unquoted expansion.
@@ -97,6 +122,10 @@ choose() { # $1 = header, $2 = preselected option
 
 ask() { # $1 = prompt, $2 = default value
   local reply
+  if ((ASSUME_YES)); then
+    printf '%s\n' "${2-}"
+    return
+  fi
   if have_gum; then
     gum input --header="$1" --value="${2-}"
     return
@@ -105,11 +134,70 @@ ask() { # $1 = prompt, $2 = default value
   printf '%s\n' "${reply:-${2-}}"
 }
 
+# ------------------------------------------------------------- current state
+
+# There is no `omarchy bar get`, so what the bar is doing right now is read
+# from the shell config the bar itself is configured through.
+
+# The plugin's bar entry as "<section>\t<settings json>", empty when the widget
+# is not placed. Section and settings come out of one read so they cannot
+# disagree, and `first` rather than `head -1` so jq is never handed a SIGPIPE.
+bar_entry() {
+  [[ -f $SHELL_CONFIG ]] || return 0
+  jq -r --arg id "$PLUGIN_ID" '
+    first(
+      (.bar.layout // {}) | to_entries[]
+      | .key as $section
+      | .value[] | select(.id == $id)
+      | "\($section)\t\(tojson)"
+    ) // empty' "$SHELL_CONFIG" 2>/dev/null || true
+}
+
+bar_section() { bar_entry | cut -f1; }
+
+# The stored value of one widget setting, empty when unset. Stringified on the
+# way out: a value written before --json existed is the string "true" rather
+# than a boolean, and re-writing it every run would not be idempotent.
+bar_setting() { # $1 = key
+  local _section json
+  IFS=$'\t' read -r _section json < <(bar_entry) || return 0
+  [[ -n ${json-} ]] || return 0
+  jq -r --arg k "$1" '.[$k] // empty | tostring' <<<"$json"
+}
+
+bar_set_if_changed() { # $1 = key, $2 = desired value, $3 = --json or empty
+  local current
+  current=$(bar_setting "$1")
+  if [[ $current == "$2" ]]; then
+    info "$1 is already $2"
+    return 0
+  fi
+  omarchy bar set "$PLUGIN_ID" "$1" "$2" ${3:+"$3"} || die "Could not set $1"
+  CHANGED=1
+  ok "$1 = $2"
+}
+
+# The configured target, or nothing when there is no usable config. Existing
+# and non-empty is not the test: a config truncated by an interrupted run is
+# both. It is parsed the way omarchy-linear-issue-create parses it, so "usable"
+# here means what it means at runtime.
+current_target() {
+  [[ -f $CONFIG ]] || return 1
+  LINEAR_OMARCHY_CONFIG="$CONFIG" lua -e '
+    local ok, cfg = pcall(dofile, os.getenv("LINEAR_OMARCHY_CONFIG"))
+    if not ok or type(cfg) ~= "table" then os.exit(1) end
+    if not (cfg.team or cfg.team_id) then os.exit(1) end
+    if not (cfg.project or cfg.project_id) then os.exit(1) end
+    io.write((cfg.team or cfg.team_id) .. " › " .. (cfg.project or cfg.project_id))
+  ' 2>/dev/null
+}
+
 # --------------------------------------------------------------- 1. the system
 
 # stdin may well be the script itself (curl | bash), so what matters is that a
 # terminal exists to ask the questions on, not that stdin is one.
 require_terminal() {
+  ((ASSUME_YES)) && return 0
   [[ -r /dev/tty && -w /dev/tty ]] ||
     die "The installer asks questions, so it needs a terminal."
 }
@@ -209,6 +297,7 @@ CHOICES
     # BatchMode ssh with a passphrase-protected key, no network — and the files
     # are right here, so offer the copy instead of stopping.
     if omarchy plugin add "$origin" --yes; then
+      CHANGED=1
       ok "Cloned into $TARGET"
     else
       warn "Could not clone $origin"
@@ -226,7 +315,8 @@ place_from_git() {
   if [[ -e $TARGET || -L $TARGET ]]; then
     info "$PLUGIN_ID is already installed in $TARGET"
     if confirm "Pull the latest version with omarchy plugin update?"; then
-      omarchy plugin update "$PLUGIN_ID" --yes || warn "omarchy plugin update failed"
+      omarchy plugin update "$PLUGIN_ID" --yes && CHANGED=1 ||
+        warn "omarchy plugin update failed"
     else
       ok "Keeping the installed copy"
     fi
@@ -235,6 +325,7 @@ place_from_git() {
 
   info "Cloning $REPO_URL"
   omarchy plugin add "$REPO_URL" --yes || die "omarchy plugin add failed"
+  CHANGED=1
   ok "Cloned into $TARGET"
 }
 
@@ -264,6 +355,7 @@ copy_plugin() {
 
   chmod +x "$TARGET"/bin/* 2>/dev/null || true
   omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
+  CHANGED=1
   ok "Copied into $TARGET"
 }
 
@@ -272,8 +364,16 @@ copy_plugin() {
 enable_widget() {
   step "Bar placement"
 
-  local default_section section
-  default_section=$(jq -r '.barWidget.defaultSection // "right"' "$TARGET/manifest.json")
+  local current default_section section
+  current=$(bar_section)
+
+  if [[ -n $current ]]; then
+    ok "Already in the $current section"
+    ((RECONFIGURE)) || confirm "Move it?" n || return 0
+    default_section=$current
+  else
+    default_section=$(jq -r '.barWidget.defaultSection // "right"' "$TARGET/manifest.json")
+  fi
 
   section=$(choose "Which bar section should the Linear icon sit in?" "$default_section" <<CHOICES
 left
@@ -283,16 +383,29 @@ CHOICES
 )
   [[ -n $section ]] || die "Cancelled"
 
-  # The shell has to know the plugin exists before it can be enabled, and a
-  # fresh copy is only picked up on the next rescan.
+  # Enabling an already-enabled widget is the one call that could leave a second
+  # entry behind, so the no-op case returns before reaching it.
+  if [[ $section == "$current" ]]; then
+    ok "Staying in the $section section"
+    return 0
+  fi
+
+  wait_for_plugin
+  omarchy plugin enable "$PLUGIN_ID" --section "$section" || die "Could not enable $PLUGIN_ID"
+  CHANGED=1
+  ok "Enabled in the $section section"
+}
+
+# The shell has to know the plugin exists before it can be enabled, and a fresh
+# copy is only picked up on the next rescan.
+wait_for_plugin() {
   local attempt
   for ((attempt = 0; attempt < 40; attempt++)); do
-    omarchy plugin list --json 2>/dev/null | jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null && break
+    omarchy plugin list --json 2>/dev/null |
+      jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null && return 0
     sleep 0.05
   done
-
-  omarchy plugin enable "$PLUGIN_ID" --section "$section" || die "Could not enable $PLUGIN_ID"
-  ok "Enabled in the $section section"
+  return 0
 }
 
 # ------------------------------------------------------------------ 4. api key
@@ -308,7 +421,7 @@ store_key() {
 
   if [[ -n $existing ]]; then
     ok "A key is already stored"
-    confirm "Replace it?" n || return 0
+    ((RECONFIGURE)) || confirm "Replace it?" n || return 0
   else
     info "Create a personal API key in Linear: Settings → Security & access →"
     info "API keys, with both read and write scopes. read is required so team"
@@ -316,6 +429,7 @@ store_key() {
   fi
 
   "$SETUP" key || die "Could not store the key"
+  CHANGED=1
 }
 
 # ------------------------------------------------------------- 5. issue target
@@ -325,7 +439,15 @@ store_key() {
 pick_target() {
   step "Issue target"
 
-  local teams team projects project priority
+  local teams team projects project priority existing
+  # Asking Linear for the team list costs a round trip and rewriting the config
+  # costs a backup file, so neither happens when the target is already usable.
+  existing=$(current_target) || existing=""
+  if [[ -n $existing ]]; then
+    ok "Already filing into $existing"
+    ((RECONFIGURE)) || confirm "Change the target?" n || return 0
+  fi
+
   info "Reading your teams from Linear…"
   teams=$("$SETUP" list --json) || die "Could not list teams; check the API key"
   [[ $(jq 'length' <<<"$teams") -gt 0 ]] || die "This account has no teams"
@@ -361,6 +483,7 @@ CHOICES
   esac
 
   "$SETUP" "${args[@]}" || die "Could not write the config"
+  CHANGED=1
   ok "Target: $team › $project"
 }
 
@@ -369,9 +492,20 @@ CHOICES
 configure_panel() {
   step "Panel style"
 
-  local position frame
+  local position frame current_position current_frame
+
+  # Whatever is set now is offered back as the default, so a re-run preselects
+  # the user's own choice rather than the manifest's.
+  current_position=$(bar_setting panelPosition)
+  current_frame=$(bar_setting frameStyle)
+
+  if [[ -n $current_position || -n $current_frame ]]; then
+    ok "Panel opens ${current_position:-unset}, frame styling ${current_frame:-unset}"
+    ((RECONFIGURE)) || confirm "Restyle it?" n || return 0
+  fi
+
   position=$(choose "Which screen corner should the capture field open in?" \
-    "$(jq -r '.barWidget.defaults.panelPosition // "top-left"' "$TARGET/manifest.json")" <<CHOICES
+    "${current_position:-$(jq -r '.barWidget.defaults.panelPosition // "top-left"' "$TARGET/manifest.json")}" <<CHOICES
 top-left
 top-right
 bottom-left
@@ -383,12 +517,15 @@ CHOICES
   info "Frame styling grows the panel out of the desktop frame: no borders on the"
   info "edges it is attached to, and concave fillets where it leaves the frame."
   info "It needs a top bar; off gives a plain bordered card instead."
-  if confirm "Use frame styling?"; then frame=true; else frame=false; fi
+  if confirm "Use frame styling?" "$([[ $current_frame == false ]] && echo n || echo y)"; then
+    frame=true
+  else
+    frame=false
+  fi
 
-  omarchy bar set "$PLUGIN_ID" panelPosition "$position" || die "Could not set panelPosition"
+  bar_set_if_changed panelPosition "$position"
   # --json so the value lands as a real boolean rather than the string "false".
-  omarchy bar set "$PLUGIN_ID" frameStyle "$frame" --json || die "Could not set frameStyle"
-  ok "Panel opens $position, frame styling $frame"
+  bar_set_if_changed frameStyle "$frame" --json
 }
 
 # ------------------------------------------------------------------ 7. keybind
@@ -405,7 +542,7 @@ configure_keybind() {
       inside
     ' "$BINDINGS" | grep -o 'o.bind("[^"]*"' | head -1 | cut -d'"' -f2)
     ok "Managed keybind already present${existing:+: $existing}"
-    confirm "Change it?" n || return 0
+    ((RECONFIGURE)) || confirm "Change it?" n || return 0
   elif [[ -f $BINDINGS ]] && grep -qF -- "$PLUGIN_ID" "$BINDINGS"; then
     warn "bindings.lua already mentions $PLUGIN_ID outside the managed block:"
     grep -nF -- "$PLUGIN_ID" "$BINDINGS" | sed 's/^/     /'
@@ -453,6 +590,7 @@ configure_keybind() {
     printf '%s\n' "$BIND_END"
   } >>"$BINDINGS"
 
+  CHANGED=1
   hyprctl reload >/dev/null 2>&1 || warn "hyprctl reload failed; is Hyprland running?"
   local errors
   errors=$(hyprctl configerrors 2>/dev/null || true)
@@ -484,6 +622,10 @@ remove_managed_block() {
 
 restart_shell() {
   step "Restarting the shell"
+  if ((CHANGED == 0)); then
+    info "Nothing changed, so the running shell is already the configured one"
+    return 0
+  fi
   # A changed QML component is not reliably hot-reloaded, so a restart is the
   # only way to be sure the widget the user just configured is the one running.
   omarchy restart shell >/dev/null 2>&1 || warn "omarchy restart shell failed"
@@ -510,22 +652,31 @@ summary() {
   printf 'Change the target later with: %s use "Team" "Project"\n' "$SETUP"
   local uninstaller="$SRC/uninstall.sh"
   ((BOOTSTRAP)) && uninstaller="$TARGET/uninstall.sh"
-  printf 'Remove everything, key included, with: %s\n\n' "$uninstaller"
+  printf 'Remove everything, key included, with: %s\n' "$uninstaller"
+  printf 'Re-running is safe; --reconfigure asks about the settled steps again.\n\n'
 }
 
 # ---------------------------------------------------------------------- driver
 
-case ${1-} in
--h | --help)
-  sed -n '3,15p' "$0" | sed 's/^# \?//'
-  exit 0
-  ;;
-"") ;;
-*) die "Unknown option: $1" ;;
-esac
+while (($# > 0)); do
+  case $1 in
+  -h | --help)
+    sed -n '3,22p' "$0" | sed 's/^# \?//'
+    exit 0
+    ;;
+  --reconfigure) RECONFIGURE=1 ;;
+  -y | --yes) ASSUME_YES=1 ;;
+  *) die "Unknown option: $1" ;;
+  esac
+  shift
+done
 
 printf '\n\033[1mLinear for the Omarchy bar\033[0m\n'
-printf 'Nothing is written until each question is answered.\n'
+if ((ASSUME_YES)); then
+  printf 'Taking every default: missing pieces are filled in, settled ones left alone.\n'
+else
+  printf 'Nothing is written until each question is answered.\n'
+fi
 
 require_terminal
 check_deps

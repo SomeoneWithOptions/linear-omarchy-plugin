@@ -166,16 +166,14 @@ cmd_use() {
   project_id=$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")
   [[ -n $project_id ]] || die "No project named \"$project\" in team \"$team\". Run: $(basename "$0") list"
 
-  mkdir -p "$(dirname "$CONFIG")"
-  if [[ -f $CONFIG ]]; then
-    cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
-    echo "Backed up the existing config."
-  fi
-
   local priority_line="  -- priority = 3,"
   [[ -z $priority ]] || priority_line="  priority = $priority,"
 
-  cat >"$CONFIG" <<LUA
+  # Rendered first and compared, so re-running with the same target neither
+  # rewrites the file nor leaves another backup behind.
+  local rendered
+  rendered=$(
+    cat <<LUA
 -- Linear bar plugin configuration.
 -- Names are the source of truth; the plugin caches the matching UUIDs in
 -- ${CACHE_DIR#"$HOME"/}/ids.json and re-resolves them whenever a name changes.
@@ -191,6 +189,22 @@ return {
 $priority_line
 }
 LUA
+  )
+
+  mkdir -p "$(dirname "$CONFIG")"
+  if [[ -f $CONFIG && $rendered == "$(<"$CONFIG")" ]]; then
+    echo "Config already up to date."
+  else
+    if [[ -f $CONFIG ]]; then
+      cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
+      echo "Backed up the existing config."
+    fi
+    # Written through a temp file: a truncating redirect that is interrupted
+    # leaves a config that exists, is non-empty and does not parse, which is
+    # exactly the state a rerun should not have to guess about.
+    printf '%s\n' "$rendered" >"$CONFIG.tmp"
+    mv "$CONFIG.tmp" "$CONFIG"
+  fi
 
   mkdir -p "$CACHE_DIR"
   jq -n --arg team "$team" --arg project "$project" \
@@ -200,7 +214,6 @@ LUA
   chmod 600 "$CACHE_DIR/ids.json.tmp"
   mv "$CACHE_DIR/ids.json.tmp" "$CACHE_DIR/ids.json"
 
-  echo "Wrote $CONFIG"
   echo "Target: $team › $project"
 }
 

@@ -41,7 +41,22 @@ Linear does not have. It writes nothing until the matching question is
 answered, backs up `bindings.lua` before touching it, and finishes by
 restarting the shell and verifying the key and the target.
 
-It is safe to run again — rerun it to change any of those answers.
+It is safe to run again. Every step reads what is already on the machine — the
+bar entry in `shell.json`, the key in the keyring, the config, the managed
+block in `bindings.lua` — reports it and asks only about what is missing.
+Answers that are already settled are left alone unless you say otherwise, so a
+rerun neither reshuffles your bar nor spends an API call re-resolving a target
+that has not changed. Nothing is rewritten when the new content would be
+identical, and the shell is only restarted when something actually changed.
+
+```bash
+./install.sh --reconfigure    # ask about the settled steps again
+./install.sh --yes            # no questions: fill in gaps, change nothing set
+```
+
+`--yes` takes each question's default, and every "change the existing one?"
+question defaults to no, which makes it a repair run — safe from a dotfiles
+bootstrap. Use `--reconfigure` to change an answer you have already given.
 
 ### By hand
 
@@ -192,7 +207,7 @@ Two things cost time if you don't know them:
 | `FrameJoin.qml` | The concave fillet where the panel meets the frame and the screen edge |
 | `bin/omarchy-linear-issue-create` | Reads config and key, calls the API, sends the notification |
 | `bin/omarchy-linear-setup` | Stores the key, lists teams and projects, writes `config.lua` |
-| `install.sh` | Interactive setup: deps, placement, key, target, panel, keybind |
+| `install.sh` | Interactive setup: deps, placement, key, target, panel, keybind. Rerunnable |
 | `uninstall.sh` | Removes the plugin, its config, its keybind and the stored key |
 
 `Panel.qml` never touches the network. It hands the title to

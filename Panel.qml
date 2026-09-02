@@ -66,9 +66,13 @@ Panel {
   // helper for it rather than keeping a second copy that can drift.
   function refreshTarget() { targetProc.running = true }
 
-  Component.onCompleted: refreshTarget()
+  Component.onCompleted: {
+    refreshTarget()
+    console.log("LINEAR PANEL COMPLETED: target=" + targetLabel + " colHeight=" + column.implicitHeight + " heroH=" + hero.implicitHeight + " fieldH=" + titleField.implicitHeight)
+  }
 
   onOpenedChanged: {
+    console.log("LINEAR onOpenedChanged:", opened, "canSubmit:", canSubmit, "colHeight:", column.implicitHeight)
     if (!opened) return
     draftTitle = ""
     refreshTarget()
@@ -143,6 +147,7 @@ Panel {
         spacing: Style.space(12)
 
         PanelHero {
+          id: hero
           width: parent.width
           title: "New issue"
           detail: root.targetLabel
