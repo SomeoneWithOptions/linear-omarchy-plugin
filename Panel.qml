@@ -112,10 +112,17 @@ Panel {
     focusTarget: titleField
     pinEdge: root.panelPinEdge
     pinVerticalEdge: root.panelPinVerticalEdge
-    // A capture field is worth nothing if a stray click throws the draft away:
-    // stay open across clicks into other windows, and close only on Esc (or
-    // the bar icon / IPC). Click the card to hand focus back to the field.
-    dismissOnOutsideClick: false
+    // Keyboard focus wins over surviving a stray click. The two cannot be had
+    // at once: only a Wayland input region under the pointer keeps the
+    // keyboard, because Hyprland re-runs focus-under-cursor when the panel
+    // drops from its Exclusive focus prime to OnDemand (Hyprland
+    // LayerSurface.cpp: WASEXCLUSIVE && now ON_DEMAND -> simulateMouseMovement).
+    // A card-only input region is not under the pointer, so the panel handed
+    // the keyboard straight back to the window behind it ~75ms after opening
+    // and SUPER+SHIFT+L typed into whatever was focused before. The
+    // full-screen region keeps the keyboard, and its cost is that a click
+    // outside the card lands on the panel and dismisses it.
+    dismissOnOutsideClick: true
     frameStyle: root.frameStyleEnabled
     contentWidth: panel.fittedContentWidth(Style.space(360))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(320))
