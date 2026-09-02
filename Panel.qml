@@ -29,6 +29,14 @@ Panel {
 
   readonly property bool canSubmit: draftTitle.trim() !== ""
 
+  // `omarchy bar set` writes layout-entry values as strings, so a stored
+  // "false" arrives here as a truthy string. Accept either form.
+  readonly property bool frameStyleEnabled: {
+    var value = setting("frameStyle", true)
+    if (typeof value === "string") return value !== "false" && value !== "0" && value !== ""
+    return value === true
+  }
+
   function submit() {
     if (!canSubmit) return
     var title = draftTitle.trim()
@@ -75,13 +83,18 @@ Panel {
     onPressed: function(buttonCode) { root.toggle() }
   }
 
-  KeyboardPanel {
+  // Pinned to the top-left corner rather than under its own icon, so the
+  // capture field always opens in the same place no matter where the widget
+  // sits in the bar.
+  FramePanel {
     id: panel
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
     focusTarget: titleField
+    pinEdge: "left"
+    frameStyle: root.frameStyleEnabled
     contentWidth: panel.fittedContentWidth(Style.space(360))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(320))
 

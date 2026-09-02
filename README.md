@@ -79,6 +79,41 @@ project in Linear re-resolves rather than filing into the wrong place.
 Bar placement and section live in `~/.config/omarchy/shell.json`, which is the
 shell's own schema — `omarchy bar move andres.linear --section right --index 5`.
 
+## Panel styling
+
+The panel always opens in the top-left corner rather than under its bar icon,
+so the capture field is in the same place whatever the bar layout is.
+
+By default it grows out of the desktop frame: it overlaps the bar, drops its top
+border, and draws concave fillets where it meets the frame and the left screen
+edge. For a plain bordered card below the bar instead:
+
+```bash
+omarchy bar set andres.linear frameStyle false
+```
+
+Note that `omarchy bar set` writes values into `shell.json` as strings, so the
+widget reads `"false"` as false as well as a real `false`.
+
+## Hacking
+
+Plugin QML is loaded from `~/.config/omarchy/plugins/andres.linear/`, so develop
+against a copy there and sync your checkout into it:
+
+```bash
+rsync -a --delete --exclude .git --exclude README.md ./ ~/.config/omarchy/plugins/andres.linear/
+omarchy restart shell
+```
+
+Two things cost time if you don't know them:
+
+- **Don't symlink the plugin directory to your checkout.** The shell discovers
+  it and `omarchy plugin validate` rejects it, but edits behind the symlink never
+  reach the shell — the widget silently renders nothing.
+- The shell logs `Local plugin changed, reloading` when files change, but a
+  changed QML component is not always picked up. `omarchy restart shell` is the
+  reliable way to see an edit.
+
 ## Layout
 
 | Path | Role |
@@ -86,6 +121,8 @@ shell's own schema — `omarchy bar move andres.linear --section right --index 5
 | `manifest.json` | Plugin manifest (`kind: bar-widget`) |
 | `Panel.qml` | Bar button and the popup: one title field, Enter creates, Esc cancels |
 | `LinearIcon.qml` | The Linear mark, drawn from primitives so it stays crisp at any font scale |
+| `FramePanel.qml` | Popup surface, pinned to the top-left corner |
+| `FrameJoin.qml` | The concave fillet where the panel meets the frame and the screen edge |
 | `bin/omarchy-linear-issue-create` | Reads config and key, calls the API, sends the notification |
 | `bin/omarchy-linear-setup` | Stores the key, lists teams and projects, writes `config.lua` |
 

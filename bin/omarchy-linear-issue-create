@@ -74,6 +74,7 @@ read_config() {
   done <<<"$out"
 
   [[ -n $cfg_team || -n $cfg_team_id ]] || die "config.lua needs a team name or team_id"
+  [[ -n $cfg_project || -n $cfg_project_id ]] || die "config.lua needs a project name or project_id"
 }
 
 read_token() {
@@ -112,27 +113,35 @@ api_error() {
   jq -r '.errors[0].message // empty' <<<"$1"
 }
 
+# Both names are matched server-side by filter rather than by fetching every
+# team and project and matching here: Linear budgets a query by how many nodes
+# it could return, and an unfiltered teams-with-projects query blows that budget
+# outright ("Query too complex").
 lookup_ids() {
   local query payload response err
-  query='query { teams(first: 100) { nodes { id name projects(first: 200) { nodes { id name } } } } }'
-  payload=$(jq -n --arg q "$query" '{query: $q}')
+  query='query ResolveTarget($team: String!, $project: String!) {
+    teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
+      nodes {
+        id
+        name
+        projects(first: 10, filter: { name: { eqIgnoreCase: $project } }) {
+          nodes { id name }
+        }
+      }
+    }
+  }'
+
+  payload=$(jq -n --arg q "$query" --arg team "$cfg_team" --arg project "$cfg_project" \
+    '{query: $q, variables: {team: $team, project: $project}}')
 
   response=$(api "$payload") || die "Could not reach the Linear API"
   err=$(api_error "$response")
   [[ -z $err ]] || die "$err"
 
-  team_id=$(jq -r --arg t "$cfg_team" '
-    .data.teams.nodes[] | select((.name | ascii_downcase) == ($t | ascii_downcase)) | .id
-  ' <<<"$response" | head -1)
+  team_id=$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")
   [[ -n $team_id ]] || die "No Linear team named \"$cfg_team\""
 
-  project_id=$(jq -r --arg t "$cfg_team" --arg p "$cfg_project" '
-    .data.teams.nodes[]
-    | select((.name | ascii_downcase) == ($t | ascii_downcase))
-    | .projects.nodes[]
-    | select((.name | ascii_downcase) == ($p | ascii_downcase))
-    | .id
-  ' <<<"$response" | head -1)
+  project_id=$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")
   [[ -n $project_id ]] || die "No project named \"$cfg_project\" in team \"$cfg_team\""
 
   mkdir -p "$CACHE_DIR"

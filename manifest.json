@@ -17,6 +17,18 @@
     "description": "Create a Linear issue in a preset team and project.",
     "category": "Productivity",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "frameStyle": true
+    },
+    "schema": [
+      {
+        "key": "frameStyle",
+        "type": "boolean",
+        "label": "Frame styling",
+        "description": "Grow the panel out of the desktop frame with concave joins. Off gives a plain bordered card below the bar.",
+        "defaultValue": true
+      }
+    ]
   }
 }

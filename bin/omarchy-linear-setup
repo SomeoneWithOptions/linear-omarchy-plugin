@@ -59,9 +59,12 @@ api() {
       --data-binary "$1"
 }
 
+# $1 = GraphQL document, $2 = optional variables object as JSON.
 query() {
-  local response err
-  response=$(api "$(jq -n --arg q "$1" '{query: $q}')") || die "Could not reach the Linear API"
+  local response err payload vars=${2-}
+  [[ -n $vars ]] || vars='{}'
+  payload=$(jq -n --arg q "$1" --argjson vars "$vars" '{query: $q, variables: $vars}')
+  response=$(api "$payload") || die "Could not reach the Linear API"
   err=$(jq -r '.errors[0].message // empty' <<<"$response")
   [[ -z $err ]] || die "Linear API error: $err"
   printf '%s' "$response"
@@ -87,9 +90,11 @@ cmd_check() {
     jq -r '"Authenticated as \(.data.viewer.name) <\(.data.viewer.email)>"'
 }
 
+# Page sizes stay modest on purpose: Linear rejects a query by the number of
+# nodes it could return, and teams×projects multiplies fast.
 cmd_list() {
   TOKEN=$(read_token)
-  query '{ teams(first: 100) { nodes { name key projects(first: 200) { nodes { name state } } } } }' |
+  query '{ teams(first: 25) { nodes { name key projects(first: 25) { nodes { name state } } } } }' |
     jq -r '.data.teams.nodes[]
       | "\(.name) [\(.key)]",
         (if (.projects.nodes | length) == 0
@@ -105,20 +110,22 @@ cmd_use() {
 
   TOKEN=$(read_token)
   local response team_id project_id
-  response=$(query '{ teams(first: 100) { nodes { id name projects(first: 200) { nodes { id name } } } } }')
+  response=$(query 'query ResolveTarget($team: String!, $project: String!) {
+    teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
+      nodes {
+        id
+        name
+        projects(first: 10, filter: { name: { eqIgnoreCase: $project } }) {
+          nodes { id name }
+        }
+      }
+    }
+  }' "$(jq -n --arg team "$team" --arg project "$project" '{team: $team, project: $project}')")
 
-  team_id=$(jq -r --arg t "$team" '
-    .data.teams.nodes[] | select((.name | ascii_downcase) == ($t | ascii_downcase)) | .id
-  ' <<<"$response" | head -1)
+  team_id=$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")
   [[ -n $team_id ]] || die "No team named \"$team\". Run: $(basename "$0") list"
 
-  project_id=$(jq -r --arg t "$team" --arg p "$project" '
-    .data.teams.nodes[]
-    | select((.name | ascii_downcase) == ($t | ascii_downcase))
-    | .projects.nodes[]
-    | select((.name | ascii_downcase) == ($p | ascii_downcase))
-    | .id
-  ' <<<"$response" | head -1)
+  project_id=$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")
   [[ -n $project_id ]] || die "No project named \"$project\" in team \"$team\". Run: $(basename "$0") list"
 
   mkdir -p "$(dirname "$CONFIG")"
