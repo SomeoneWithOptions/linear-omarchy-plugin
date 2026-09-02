@@ -1,6 +1,4 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -22,7 +20,9 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color dim: Qt.darker(foreground, 1.55)
+  // PanelHero tints its meta line at 1.4; the destination line sits in the
+  // same visual tier, so it uses the same value rather than inventing one.
+  readonly property color muted: Qt.darker(foreground, 1.4)
 
   // Resolved against this file's directory, so the helper is found wherever
   // `omarchy plugin add` cloned the plugin.
@@ -66,13 +66,9 @@ Panel {
   // helper for it rather than keeping a second copy that can drift.
   function refreshTarget() { targetProc.running = true }
 
-  Component.onCompleted: {
-    refreshTarget()
-    console.log("LINEAR PANEL COMPLETED: target=" + targetLabel + " colHeight=" + column.implicitHeight + " heroH=" + hero.implicitHeight + " fieldH=" + titleField.implicitHeight)
-  }
+  Component.onCompleted: refreshTarget()
 
   onOpenedChanged: {
-    console.log("LINEAR onOpenedChanged:", opened, "canSubmit:", canSubmit, "colHeight:", column.implicitHeight)
     if (!opened) return
     draftTitle = ""
     refreshTarget()
@@ -129,7 +125,7 @@ Panel {
     // outside the card lands on the panel and dismisses it.
     dismissOnOutsideClick: true
     frameStyle: root.frameStyleEnabled
-    contentWidth: panel.fittedContentWidth(Style.space(380))
+    contentWidth: panel.fittedContentWidth(Style.space(400))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(320))
 
     // The title field owns the keyboard while it has focus, so the catcher's
@@ -141,16 +137,19 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
+      // Rhythm, top to bottom: hero, field group, footer group. The gaps
+      // *between* those three are the panel's section spacing; the gaps
+      // *inside* each are tighter, so the eye groups the field with its
+      // destination and the rule with the footer it introduces.
       Column {
         id: column
         width: parent.width
-        spacing: Style.space(12)
+        spacing: Style.space(14)
 
         PanelHero {
           id: hero
           width: parent.width
           title: "New issue"
-          detail: root.targetLabel
           meta: "Linear"
           foreground: root.foreground
           fontFamily: root.fontFamily
@@ -162,130 +161,88 @@ Panel {
           }
         }
 
-        TextField {
-          id: titleField
+        // What you type and where it lands, read as one unit.
+        Column {
           width: parent.width
-          foreground: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.subtitle
-          horizontalPadding: Style.space(12)
-          verticalPadding: Style.space(9)
-          placeholderText: "Issue title…"
-          text: root.draftTitle
-          onTextChanged: root.draftTitle = text
-          onAccepted: root.submit()
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) {
-              root.close()
-              event.accepted = true
-            }
-          }
-        }
+          spacing: Style.space(6)
 
-        PanelSeparator {
-          width: parent.width
-          foreground: root.foreground
-          strength: 0.1
-        }
-
-        RowLayout {
-          width: parent.width
-          spacing: Style.space(8)
-
-          Item {
-            implicitWidth: submitRow.implicitWidth
-            implicitHeight: submitRow.implicitHeight
-            Layout.alignment: Qt.AlignVCenter
-
-            Row {
-              id: submitRow
-              spacing: Style.space(6)
-
-              BorderSurface {
-                implicitWidth: submitCapText.implicitWidth + Style.space(10)
-                implicitHeight: Style.space(18)
-                radius: Math.max(0, Math.min(Style.cornerRadius, Style.space(4)))
-                color: root.canSubmit
-                  ? (submitMouse.containsMouse ? Style.pressedFillFor(root.foreground, Color.accent) : Style.selectedFillFor(root.foreground, Color.accent))
-                  : Style.normalFillFor(root.foreground, Color.accent)
-                borderSpec: Border.controlSpec(root.canSubmit ? (submitMouse.containsMouse ? "focus" : "selected") : "normal", root.foreground, Color.accent)
-
-                Text {
-                  id: submitCapText
-                  anchors.centerIn: parent
-                  text: "↵ Enter"
-                  color: root.canSubmit ? root.foreground : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
+          // The field is the reason the panel exists, so it outranks the hero
+          // title in size and gets the roomiest padding on the card.
+          TextField {
+            id: titleField
+            width: parent.width
+            foreground: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            horizontalPadding: Style.space(12)
+            verticalPadding: Style.space(10)
+            placeholderText: "Issue title…"
+            text: root.draftTitle
+            onTextChanged: root.draftTitle = text
+            onAccepted: root.submit()
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                root.close()
+                event.accepted = true
               }
-
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.canSubmit ? "Create issue" : "Type title to create"
-                color: root.canSubmit ? root.foreground : root.dim
-                opacity: root.canSubmit ? 0.9 : 0.6
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
-
-            MouseArea {
-              id: submitMouse
-              anchors.fill: parent
-              cursorShape: root.canSubmit ? Qt.PointingHandCursor : Qt.ArrowCursor
-              enabled: root.canSubmit
-              onClicked: root.submit()
             }
           }
 
-          Item { Layout.fillWidth: true }
+          // "Team › Project" from config.lua. It lives on its own line rather
+          // than in the hero's detail pill because a pill sizes to its text
+          // and cannot elide — a long project name would have pushed the
+          // title out of the card. It also arrives a beat after the panel
+          // opens, so hide the line until it does instead of reserving a gap.
+          Text {
+            width: parent.width
+            visible: root.targetLabel !== ""
+            textFormat: Text.PlainText
+            text: "→ " + root.targetLabel
+            color: root.muted
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
+        // The rule introduces the footer, so it sits closer to it than to the
+        // field above.
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.foreground
+            strength: 0.1
+          }
 
           Item {
-            implicitWidth: cancelRow.implicitWidth
-            implicitHeight: cancelRow.implicitHeight
-            Layout.alignment: Qt.AlignVCenter
+            width: parent.width
+            implicitHeight: Math.max(submitAction.implicitHeight, cancelAction.implicitHeight)
 
-            Row {
-              id: cancelRow
-              spacing: Style.space(6)
-
-              BorderSurface {
-                implicitWidth: escCapText.implicitWidth + Style.space(10)
-                implicitHeight: Style.space(18)
-                radius: Math.max(0, Math.min(Style.cornerRadius, Style.space(4)))
-                color: cancelMouse.containsMouse
-                  ? Style.hoverFillFor(root.foreground, Color.accent)
-                  : Style.normalFillFor(root.foreground, Color.accent)
-                borderSpec: Border.controlSpec(cancelMouse.containsMouse ? "hover-cursor" : "normal", root.foreground, Color.accent)
-
-                Text {
-                  id: escCapText
-                  anchors.centerIn: parent
-                  text: "Esc"
-                  color: cancelMouse.containsMouse ? root.foreground : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-              }
-
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Cancel"
-                color: cancelMouse.containsMouse ? root.foreground : root.dim
-                opacity: 0.6
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
+            FooterAction {
+              id: submitAction
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              keyLabel: "↵ Enter"
+              label: root.canSubmit ? "Create issue" : "Type a title to create"
+              primary: true
+              active: root.canSubmit
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onTriggered: root.submit()
             }
 
-            MouseArea {
-              id: cancelMouse
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.close()
+            FooterAction {
+              id: cancelAction
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              keyLabel: "Esc"
+              label: "Cancel"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onTriggered: root.close()
             }
           }
         }
