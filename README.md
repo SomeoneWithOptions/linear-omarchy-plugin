@@ -9,17 +9,49 @@ and `jq`.
 
 ## Install
 
+One command, no clone — the installer fetches the plugin itself:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/SomeoneWithOptions/linear-omarchy-plugin/main/install.sh)
+```
+
+`curl … | bash` works as well; the questions are read from `/dev/tty` rather
+than stdin, so a piped script does not eat the answers. Read it before you run
+it, as with any installer that comes down a pipe.
+
+From a clone instead, which is the same script:
+
+```bash
+git clone https://github.com/SomeoneWithOptions/linear-omarchy-plugin.git
+cd linear-omarchy-plugin
+./install.sh
+```
+
+The difference is only where the plugin files come from. Run on its own the
+script clones the repo through `omarchy plugin add`, so the install stays
+git-managed and `omarchy plugin update andres.linear` keeps working. Run from a
+clone it offers that same clone or a copy of your working tree — take the copy
+when you are developing against it.
+
+The installer asks for every preference rather than assuming one: bar section,
+API key, which team and project to file into, the default priority, the panel
+corner, frame styling, and the keybind. Teams and projects are read from your
+own Linear account and picked from a list, so the target cannot be a name
+Linear does not have. It writes nothing until the matching question is
+answered, backs up `bindings.lua` before touching it, and finishes by
+restarting the shell and verifying the key and the target.
+
+It is safe to run again — rerun it to change any of those answers.
+
+### By hand
+
 ```bash
 omarchy plugin add https://github.com/SomeoneWithOptions/linear-omarchy-plugin.git
 omarchy plugin enable andres.linear --section right
-```
 
-Then store the API key and pick a target:
-
-```bash
 ~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup key
 ~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup list
-~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup use "Personal" "Work"
+~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup use "Personal" "Work" --priority 3
 ```
 
 Add the keybind to `~/.config/hypr/bindings.lua`:
@@ -27,6 +59,27 @@ Add the keybind to `~/.config/hypr/bindings.lua`:
 ```lua
 o.bind("SUPER + SHIFT + L", "New Linear issue", "omarchy-shell andres.linear toggle")
 ```
+
+## Uninstall
+
+```bash
+~/.config/omarchy/plugins/andres.linear/uninstall.sh          # ask before each removal
+~/.config/omarchy/plugins/andres.linear/uninstall.sh --yes    # remove everything without asking
+```
+
+Or over curl, which needs no local copy either:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/SomeoneWithOptions/linear-omarchy-plugin/main/uninstall.sh)
+```
+
+This takes the whole footprint off the machine: the plugin folder, the bar
+entry and its widget settings in `shell.json`, the managed keybind block, the
+config and its backups, the resolved-id cache, and the API key from both the
+login keyring and the file fallback. A key file is overwritten with `shred`
+before it is unlinked. Any file it edits is backed up next to itself first.
+
+A keybind you added by hand is quoted back to you and only removed on a yes.
 
 ## API key
 
@@ -139,6 +192,8 @@ Two things cost time if you don't know them:
 | `FrameJoin.qml` | The concave fillet where the panel meets the frame and the screen edge |
 | `bin/omarchy-linear-issue-create` | Reads config and key, calls the API, sends the notification |
 | `bin/omarchy-linear-setup` | Stores the key, lists teams and projects, writes `config.lua` |
+| `install.sh` | Interactive setup: deps, placement, key, target, panel, keybind |
+| `uninstall.sh` | Removes the plugin, its config, its keybind and the stored key |
 
 `Panel.qml` never touches the network. It hands the title to
 `omarchy-linear-issue-create` detached, so the popup closes on the keystroke and
