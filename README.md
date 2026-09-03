@@ -52,13 +52,20 @@ identical, and the shell is only restarted when something actually changed.
 
 ```bash
 ./install.sh --reconfigure    # ask about the settled steps again
-./install.sh --yes            # take safe defaults; repair incomplete plugin files
+./install.sh --yes            # unattended defaults; repair incomplete plugin files
 ```
 
-`--yes` takes safe defaults and leaves completed choices alone, which makes it
-a repair run suitable for a dotfiles bootstrap. It will not choose a Linear
-team or project from an account-specific list; when no target exists, it prints
-the command needed to set one. A missing API key still requires secret input.
+Unattended curl install, suitable for a dotfiles bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SomeoneWithOptions/linear-omarchy-plugin/main/install.sh | bash -s -- --yes
+```
+
+`--yes` never reads from the terminal. It takes safe defaults, leaves completed
+choices alone, and repairs an incomplete plugin copy. It will not invent a
+Linear API key or choose a team/project from an account-specific list. Missing
+account setup is reported and skipped; finish it later with
+`omarchy-linear-setup key` and `omarchy-linear-setup use "Team" "Project"`.
 Use `--reconfigure` to change an answer you have already given.
 
 ### By hand

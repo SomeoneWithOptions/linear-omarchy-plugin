@@ -19,7 +19,8 @@
 # Re-running is safe: every step reads what is already on the machine and asks
 # only about what is missing. --yes takes safe defaults, repairs an incomplete
 # plugin copy, and leaves completed choices alone. It never invents a Linear
-# team or project when none has been configured.
+# API key, team, or project when none has been configured; those account steps
+# are reported and skipped.
 
 set -euo pipefail
 
@@ -595,6 +596,11 @@ store_key() {
     info "Create a personal API key in Linear: Settings → Security & access →"
     info "API keys, with both read and write scopes. read is required so team"
     info "and project names can be resolved to UUIDs."
+    if ((ASSUME_YES)); then
+      warn "No API key is stored; skipping account setup in unattended mode."
+      info "Configure later with: $SETUP key"
+      return 0
+    fi
   fi
 
   prompt_for_key || die "Could not store the key"
@@ -618,6 +624,10 @@ pick_target() {
       return 0
     fi
     ((RECONFIGURE)) || confirm "Change the target?" n || return 0
+  elif ((ASSUME_YES)); then
+    warn "No issue target is configured; skipping account setup in unattended mode."
+    info "Configure later with: $SETUP use \"Team\" \"Project\""
+    return 0
   fi
 
   info "Reading your teams from Linear…"
@@ -629,12 +639,6 @@ pick_target() {
     teams=$("$SETUP" list --json) || die "Still could not list teams"
   fi
   [[ $(jq 'length' <<<"$teams") -gt 0 ]] || die "This account has no teams"
-
-  if ((ASSUME_YES)) && [[ -z $existing ]]; then
-    warn "No issue target configured, and --yes will not choose a team for you."
-    info "Set it with: $SETUP use \"Team\" \"Project\""
-    return 0
-  fi
 
   team=$(jq -r '.[].name' <<<"$teams" | choose "Which team files the issues?") || die "Cancelled"
 
@@ -828,8 +832,16 @@ verify() {
 }
 
 summary() {
-  printf '\n\033[1mDone.\033[0m Click the Linear icon in the bar to file an issue.\n'
-  printf 'Change the target later with: %s use "Team" "Project"\n' "$SETUP"
+  local target=""
+  target=$(current_target) || target=""
+  if [[ -n $target ]]; then
+    printf '\n\033[1mDone.\033[0m Click the Linear icon in the bar to file an issue.\n'
+    printf 'Change the target later with: %s use "Team" "Project"\n' "$SETUP"
+  else
+    printf '\n\033[1mInstalled.\033[0m Account setup remains:\n'
+    printf '  %s key\n' "$SETUP"
+    printf '  %s use "Team" "Project"\n' "$SETUP"
+  fi
   local uninstaller="$SRC/uninstall.sh"
   ((BOOTSTRAP)) && uninstaller="$TARGET/uninstall.sh"
   printf 'Remove everything, key included, with: %s\n' "$uninstaller"
