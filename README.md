@@ -37,9 +37,10 @@ The installer asks for every preference rather than assuming one: bar section,
 API key, which team and project to file into, the default priority, the panel
 corner, frame styling, and the keybind. Teams and projects are read from your
 own Linear account and picked from a list, so the target cannot be a name
-Linear does not have. It writes nothing until the matching question is
-answered, backs up `bindings.lua` before touching it, and finishes by
-restarting the shell and verifying the key and the target.
+Linear does not have. Changes are applied step by step, so cancelling preserves
+completed steps and a rerun continues from that state. It backs up
+`bindings.lua` before touching it, then restarts the shell and verifies the key
+and target.
 
 It is safe to run again. Every step reads what is already on the machine — the
 bar entry in `shell.json`, the key in the keyring, the config, the managed
@@ -51,12 +52,14 @@ identical, and the shell is only restarted when something actually changed.
 
 ```bash
 ./install.sh --reconfigure    # ask about the settled steps again
-./install.sh --yes            # no questions: fill in gaps, change nothing set
+./install.sh --yes            # take safe defaults; repair incomplete plugin files
 ```
 
-`--yes` takes each question's default, and every "change the existing one?"
-question defaults to no, which makes it a repair run — safe from a dotfiles
-bootstrap. Use `--reconfigure` to change an answer you have already given.
+`--yes` takes safe defaults and leaves completed choices alone, which makes it
+a repair run suitable for a dotfiles bootstrap. It will not choose a Linear
+team or project from an account-specific list; when no target exists, it prints
+the command needed to set one. A missing API key still requires secret input.
+Use `--reconfigure` to change an answer you have already given.
 
 ### By hand
 
@@ -110,10 +113,10 @@ encrypted at rest:
 secret-tool store --label='Linear API key' service linear-omarchy account api
 ```
 
-If you have no keyring (headless, for instance), the plugin falls back to
-`~/.local/share/omarchy/linear/token`. That file **must** be mode `600` or `400`
-— the helper refuses to read it otherwise, so a loosened mode fails loudly
-instead of silently downgrading your security.
+If you have no keyring (headless, for instance), setup stores the key in
+`~/.local/share/omarchy/linear/token` with mode `600`. The helper accepts only
+mode `600` or `400`, so loosened permissions fail loudly instead of silently
+downgrading security.
 
 An environment variable is deliberately not supported. Hyprland's session
 environment is inherited by every child process — every terminal, your browser,

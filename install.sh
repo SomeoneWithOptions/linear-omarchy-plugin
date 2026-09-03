@@ -10,16 +10,16 @@
 # Usage:
 #   ./install.sh                                    from a clone
 #   ./install.sh --reconfigure                      ask again about settled steps
-#   ./install.sh --yes                              no questions, fill gaps only
-#   bash <(curl -fsSL <raw-url>/install.sh)         without one
+#   ./install.sh --yes                              take safe defaults, fill gaps
+#   curl -fsSL <raw-url>/install.sh | bash          without a clone
 #
 # Run on its own it clones the plugin from git first, so the script is the only
 # file needed. Questions are read from /dev/tty, so `curl … | bash` works too.
 #
 # Re-running is safe: every step reads what is already on the machine and asks
-# only about what is missing. --yes takes each question's default, and every
-# "change the existing one?" question defaults to no, so --yes repairs a
-# half-finished install without touching a finished one.
+# only about what is missing. --yes takes safe defaults, repairs an incomplete
+# plugin copy, and leaves completed choices alone. It never invents a Linear
+# team or project when none has been configured.
 
 set -euo pipefail
 
@@ -34,14 +34,21 @@ readonly KEYRING_SERVICE="linear-omarchy"
 readonly KEYRING_ACCOUNT="api"
 readonly TOKEN_FILE=${LINEAR_OMARCHY_TOKEN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linear/token}
 
-SRC=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# When read from stdin (`curl | bash`), BASH_SOURCE is empty. Do not fall back
+# to the working directory: a stray manifest there must not become the plugin.
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+  SRC=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+else
+  SRC=""
+fi
 
 # No manifest next to the script means it was fetched on its own rather than
 # run from a checkout, so the plugin has to come from git.
 BOOTSTRAP=1
-[[ -f $SRC/manifest.json ]] && BOOTSTRAP=0
+[[ -n $SRC && -f $SRC/manifest.json ]] && BOOTSTRAP=0
 
-PLUGIN_ID=$(jq -r '.id // empty' "$SRC/manifest.json" 2>/dev/null || true)
+PLUGIN_ID=""
+[[ -n $SRC ]] && PLUGIN_ID=$(jq -r '.id // empty' "$SRC/manifest.json" 2>/dev/null || true)
 PLUGIN_ID=${PLUGIN_ID:-andres.linear}
 TARGET="$PLUGINS_DIR/$PLUGIN_ID"
 SETUP="$TARGET/bin/omarchy-linear-setup"
@@ -72,6 +79,43 @@ info() { printf '   %s\n' "$1"; }
 ok() { printf '   \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '   \033[33m!\033[0m %s\n' "$1"; }
 
+on_exit() {
+  local rc=$?
+  if ((rc)); then
+    printf '\n\033[31m✗\033[0m Stopped at step %d. Re-run to continue from current state.\n' "$step_no" >&2
+  fi
+}
+trap on_exit EXIT
+
+# Keep three newest backups for files this installer manages.
+backup_file() { # $1 = path
+  local file=$1 i remove_count nullglob_was_set=0
+  local backups=()
+  BACKUP_PATH="$file.bak.$(date +%s%N)"
+  cp -- "$file" "$BACKUP_PATH"
+
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  backups=("$file".bak.*)
+  ((nullglob_was_set)) || shopt -u nullglob
+  remove_count=$((${#backups[@]} - 3))
+  for ((i = 0; i < remove_count; i++)); do
+    rm -f -- "${backups[i]}"
+  done
+}
+
+usage() {
+  cat <<'USAGE'
+Interactive installer for the Linear bar plugin.
+
+Usage:
+  ./install.sh                 from a clone
+  ./install.sh --reconfigure   ask again about settled steps
+  ./install.sh --yes           take safe defaults and fill gaps
+  curl -fsSL <raw-url>/install.sh | bash
+USAGE
+}
+
 # gum is part of a stock Omarchy install and gives the prompts the same look as
 # the rest of the CLI, but the installer stays usable without it.
 have_gum() { command -v gum >/dev/null 2>&1; }
@@ -88,32 +132,34 @@ confirm() { # $1 = question, $2 = default (y/n)
     fi
     gum confirm --default=false "$1" && return 0 || return 1
   fi
-  read -rp "   $1 [$( [[ $default == y ]] && echo 'Y/n' || echo 'y/N')] " answer </dev/tty
+  read -rp "   $1 [$( [[ $default == y ]] && echo 'Y/n' || echo 'y/N')] " answer </dev/tty || return 1
   answer=${answer:-$default}
   [[ ${answer,,} == y* ]]
 }
 
 # Reads options on stdin, one per line, and prints the chosen one.
 choose() { # $1 = header, $2 = preselected option
-  local header=$1 selected=${2-} options=() reply i=1
+  local header=$1 selected=${2-} options=() reply out i=1
   mapfile -t options
   if ((ASSUME_YES)); then
-    printf '%s\n' "${selected:-${options[0]}}"
-    return
+    [[ -n $selected ]] || die "--yes has no safe default for: $header"
+    printf '%s\n' "$selected"
+    return 0
   fi
   if have_gum; then
     # An option can contain spaces, so --selected goes in as its own word
     # rather than through an unquoted expansion.
     local args=(--header="$header")
     [[ -z $selected ]] || args+=(--selected "$selected")
-    printf '%s\n' "${options[@]}" | gum choose "${args[@]}"
-    return
+    out=$(printf '%s\n' "${options[@]}" | gum choose "${args[@]}") || return 1
+    printf '%s\n' "$out"
+    return 0
   fi
   printf '   %s\n' "$header" >&2
   for i in "${!options[@]}"; do
     printf '     %d) %s\n' "$((i + 1))" "${options[i]}" >&2
   done
-  read -rp "   Number [1]: " reply </dev/tty
+  read -rp "   Number [1]: " reply </dev/tty || return 1
   reply=${reply:-1}
   [[ $reply =~ ^[0-9]+$ && $reply -ge 1 && $reply -le ${#options[@]} ]] ||
     die "Not one of the options: $reply"
@@ -121,16 +167,17 @@ choose() { # $1 = header, $2 = preselected option
 }
 
 ask() { # $1 = prompt, $2 = default value
-  local reply
+  local reply out
   if ((ASSUME_YES)); then
     printf '%s\n' "${2-}"
-    return
+    return 0
   fi
   if have_gum; then
-    gum input --header="$1" --value="${2-}"
-    return
+    out=$(gum input --header="$1" --value="${2-}") || return 1
+    printf '%s\n' "$out"
+    return 0
   fi
-  read -rp "   $1 [${2-}]: " reply </dev/tty
+  read -rp "   $1 [${2-}]: " reply </dev/tty || return 1
   printf '%s\n' "${reply:-${2-}}"
 }
 
@@ -162,7 +209,7 @@ bar_setting() { # $1 = key
   local _section json
   IFS=$'\t' read -r _section json < <(bar_entry) || return 0
   [[ -n ${json-} ]] || return 0
-  jq -r --arg k "$1" '.[$k] // empty | tostring' <<<"$json"
+  jq -r --arg k "$1" 'if has($k) then .[$k] | tostring else empty end' <<<"$json"
 }
 
 bar_set_if_changed() { # $1 = key, $2 = desired value, $3 = --json or empty
@@ -198,8 +245,11 @@ current_target() {
 # terminal exists to ask the questions on, not that stdin is one.
 require_terminal() {
   ((ASSUME_YES)) && return 0
-  [[ -r /dev/tty && -w /dev/tty ]] ||
+  local tty_fd
+  if ! { exec {tty_fd}<>/dev/tty; } 2>/dev/null; then
     die "The installer asks questions, so it needs a terminal."
+  fi
+  exec {tty_fd}>&-
 }
 
 check_deps() {
@@ -236,6 +286,12 @@ check_deps() {
 
   # The key belongs in the login keyring; a 0600 file is the fallback, not the
   # plan, so say so once here rather than silently degrading later.
+  if ! omarchy-shell shell ping >/dev/null 2>&1; then
+    warn "omarchy-shell is not responding, so the widget cannot be placed or configured."
+    info "Start a graphical session (or run 'omarchy restart shell') and re-run."
+    die "Needs a running omarchy-shell"
+  fi
+
   if command -v secret-tool >/dev/null 2>&1; then
     ok "Dependencies present, keyring available"
   else
@@ -251,11 +307,46 @@ check_deps() {
 
 # ------------------------------------------------------------- 2. plugin files
 
+plugin_complete() {
+  [[ -f $TARGET/manifest.json && -x $TARGET/bin/omarchy-linear-setup ]]
+}
+
+# Another directory claiming this id makes plugin selection nondeterministic.
+plugin_id_owner() {
+  local dir
+  for dir in "$PLUGINS_DIR"/*/; do
+    [[ -f $dir/manifest.json ]] || continue
+    [[ ${dir%/} == "$TARGET" ]] && continue
+    [[ $(jq -r '.id // empty' "$dir/manifest.json" 2>/dev/null) == "$PLUGIN_ID" ]] || continue
+    printf '%s\n' "${dir%/}"
+    return 0
+  done
+  return 1
+}
+
+plugin_add() { # $1 = origin
+  local origin=$1 out
+  if out=$(omarchy plugin add "$origin" --yes 2>&1); then
+    CHANGED=1
+    ok "Cloned into $TARGET"
+    return 0
+  fi
+
+  warn "omarchy plugin add failed:"
+  printf '%s\n' "$out" | sed 's/^/     /'
+  return 1
+}
+
 # Three cases: the installer is already running from the installed plugin, the
 # plugin is git-managed (so `omarchy plugin update` keeps working), or the files
 # have to be copied out of this checkout.
 place_plugin() {
   step "Plugin files"
+
+  local owner
+  if owner=$(plugin_id_owner); then
+    die "$owner already claims id $PLUGIN_ID. Remove or rename it first; two folders with one id make plugin selection nondeterministic."
+  fi
 
   if ((BOOTSTRAP)); then
     place_from_git
@@ -267,12 +358,44 @@ place_plugin() {
     return
   fi
 
-  local origin=""
+  local origin="" target_origin="" default=n
   origin=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
 
   if [[ -e $TARGET || -L $TARGET ]]; then
     info "$PLUGIN_ID is already installed in $TARGET"
-    if confirm "Overwrite it with the files in $SRC?" n; then
+    if ! plugin_complete; then
+      warn "Installed copy is incomplete (no usable bin/omarchy-linear-setup)"
+      default=y
+    fi
+
+    if [[ -d $TARGET/.git ]]; then
+      target_origin=$(git -C "$TARGET" remote get-url origin 2>/dev/null || true)
+      if [[ -n $origin && $origin == "$target_origin" ]]; then
+        info "$TARGET is a checkout of the same origin"
+        if confirm "Update it with omarchy plugin update instead of copying?" "$default"; then
+          if omarchy plugin update "$PLUGIN_ID" --yes; then
+            CHANGED=1
+            if plugin_complete; then
+              ok "Updated the git-managed install"
+              return
+            fi
+            warn "Update completed, but the installed copy is still incomplete"
+          else
+            warn "omarchy plugin update failed"
+          fi
+        fi
+      fi
+
+      warn "$TARGET is a git checkout; copying over it ends 'omarchy plugin update' support"
+      if confirm "Copy anyway?" n; then
+        copy_plugin
+      else
+        ok "Keeping the installed copy"
+      fi
+      return
+    fi
+
+    if confirm "Overwrite it with the files in $SRC?" "$default"; then
       copy_plugin
     else
       ok "Keeping the installed copy"
@@ -286,22 +409,14 @@ place_plugin() {
 Clone from git ($origin)
 Copy this checkout into the plugins folder
 CHOICES
-)
+) || die "Cancelled"
   fi
-  [[ -n $method ]] || die "Cancelled"
 
   if [[ $method == Clone* ]]; then
-    # --yes skips the plugin-add prompts; the placement and enable questions
-    # come later so they are asked in one place.
-    # A clone can fail for reasons that have nothing to do with the plugin —
-    # BatchMode ssh with a passphrase-protected key, no network — and the files
-    # are right here, so offer the copy instead of stopping.
-    if omarchy plugin add "$origin" --yes; then
-      CHANGED=1
-      ok "Cloned into $TARGET"
-    else
-      warn "Could not clone $origin"
-      confirm "Copy this checkout instead?" || die "Cancelled"
+    # A clone can fail for network, authentication, validation, or catalog
+    # reasons. Preserve Omarchy's real error and make copy fallback explicit.
+    if ! plugin_add "$origin"; then
+      confirm "Copy this checkout instead?" n || die "Cancelled"
       copy_plugin
     fi
   else
@@ -314,9 +429,23 @@ CHOICES
 place_from_git() {
   if [[ -e $TARGET || -L $TARGET ]]; then
     info "$PLUGIN_ID is already installed in $TARGET"
-    if confirm "Pull the latest version with omarchy plugin update?"; then
-      omarchy plugin update "$PLUGIN_ID" --yes && CHANGED=1 ||
+    if ! plugin_complete; then
+      warn "Installed copy is incomplete (no usable bin/omarchy-linear-setup)"
+      if confirm "Replace it with a fresh git-managed clone?" y; then
+        replace_target_from_git
+      else
+        ok "Keeping the installed copy"
+      fi
+      return
+    fi
+
+    if confirm "Pull the latest version with omarchy plugin update?" n; then
+      if omarchy plugin update "$PLUGIN_ID" --yes; then
+        CHANGED=1
+        ok "Updated the git-managed install"
+      else
         warn "omarchy plugin update failed"
+      fi
     else
       ok "Keeping the installed copy"
     fi
@@ -324,9 +453,25 @@ place_from_git() {
   fi
 
   info "Cloning $REPO_URL"
-  omarchy plugin add "$REPO_URL" --yes || die "omarchy plugin add failed"
-  CHANGED=1
-  ok "Cloned into $TARGET"
+  plugin_add "$REPO_URL" || die "Could not install $PLUGIN_ID from git"
+}
+
+replace_target_from_git() {
+  # Keep the old manifest one level below PLUGINS_DIR while cloning. Omarchy's
+  # duplicate-id scan checks each direct child and would reject a sibling backup.
+  local holding="$PLUGINS_DIR/.linear-repair.$$"
+  rm -rf "$holding"
+  mkdir -p "$holding"
+  mv "$TARGET" "$holding/original"
+  if plugin_add "$REPO_URL"; then
+    rm -rf "$holding"
+    return 0
+  fi
+
+  rm -rf "$TARGET"
+  mv "$holding/original" "$TARGET"
+  rmdir "$holding"
+  die "Could not repair $PLUGIN_ID; restored the previous incomplete copy"
 }
 
 copy_plugin() {
@@ -341,10 +486,12 @@ copy_plugin() {
     rm -rf "$staging/.git" "$staging/.github"
   fi
 
-  omarchy plugin validate "$staging" || {
+  local validation
+  if ! validation=$(omarchy plugin validate "$staging" 2>&1); then
+    printf '%s\n' "${validation//"$staging"/"$SRC"}" | sed 's/^/     /' >&2
     rm -rf "$staging"
-    die "The copied plugin fails omarchy plugin validate"
-  }
+    die "The checkout at $SRC fails omarchy plugin validate"
+  fi
 
   if [[ -e $TARGET || -L $TARGET ]]; then
     rm -rf "$TARGET.replaced.$$"
@@ -380,8 +527,7 @@ left
 center
 right
 CHOICES
-)
-  [[ -n $section ]] || die "Cancelled"
+) || die "Cancelled"
 
   # Enabling an already-enabled widget is the one call that could leave a second
   # entry behind, so the no-op case returns before reaching it.
@@ -410,17 +556,40 @@ wait_for_plugin() {
 
 # ------------------------------------------------------------------ 4. api key
 
+stored_key() {
+  local key=""
+  if command -v secret-tool >/dev/null 2>&1; then
+    key=$(secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null || true)
+  fi
+  [[ -z $key && -f $TOKEN_FILE ]] && key=$(<"$TOKEN_FILE")
+  key=${key//[$'\n\r']/}
+  printf '%s' "$key"
+}
+
+prompt_for_key() {
+  local before after
+  before=$(stored_key)
+  "$SETUP" key || return 1
+  after=$(stored_key)
+  if [[ $before != "$after" ]]; then
+    CHANGED=1
+  else
+    info "API key unchanged"
+  fi
+}
+
 store_key() {
   step "Linear API key"
 
-  local existing=""
-  if command -v secret-tool >/dev/null 2>&1; then
-    existing=$(secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null || true)
-  fi
-  [[ -z $existing && -f $TOKEN_FILE ]] && existing="file"
+  local existing
+  existing=$(stored_key)
 
   if [[ -n $existing ]]; then
     ok "A key is already stored"
+    if ((ASSUME_YES)); then
+      info "Keeping it; --yes cannot enter a replacement key."
+      return 0
+    fi
     ((RECONFIGURE)) || confirm "Replace it?" n || return 0
   else
     info "Create a personal API key in Linear: Settings → Security & access →"
@@ -428,8 +597,7 @@ store_key() {
     info "and project names can be resolved to UUIDs."
   fi
 
-  "$SETUP" key || die "Could not store the key"
-  CHANGED=1
+  prompt_for_key || die "Could not store the key"
 }
 
 # ------------------------------------------------------------- 5. issue target
@@ -445,22 +613,36 @@ pick_target() {
   existing=$(current_target) || existing=""
   if [[ -n $existing ]]; then
     ok "Already filing into $existing"
+    if ((ASSUME_YES)); then
+      info "Keeping the configured target"
+      return 0
+    fi
     ((RECONFIGURE)) || confirm "Change the target?" n || return 0
   fi
 
   info "Reading your teams from Linear…"
-  teams=$("$SETUP" list --json) || die "Could not list teams; check the API key"
+  if ! teams=$("$SETUP" list --json); then
+    warn "Could not list teams — the stored key is missing, expired, or lacks read scope."
+    ((ASSUME_YES)) && die "Re-run without --yes to enter a different API key."
+    confirm "Enter a different API key now?" || die "Cancelled"
+    prompt_for_key || die "Could not store the key"
+    teams=$("$SETUP" list --json) || die "Still could not list teams"
+  fi
   [[ $(jq 'length' <<<"$teams") -gt 0 ]] || die "This account has no teams"
 
-  team=$(jq -r '.[].name' <<<"$teams" | choose "Which team files the issues?")
-  [[ -n $team ]] || die "Cancelled"
+  if ((ASSUME_YES)) && [[ -z $existing ]]; then
+    warn "No issue target configured, and --yes will not choose a team for you."
+    info "Set it with: $SETUP use \"Team\" \"Project\""
+    return 0
+  fi
+
+  team=$(jq -r '.[].name' <<<"$teams" | choose "Which team files the issues?") || die "Cancelled"
 
   projects=$(jq -r --arg team "$team" '.[] | select(.name == $team) | .projects.nodes[].name' <<<"$teams")
   [[ -n $projects ]] ||
     die "Team \"$team\" has no projects. Create one in Linear, then rerun the installer."
 
-  project=$(printf '%s\n' "$projects" | choose "Which project in $team?")
-  [[ -n $project ]] || die "Cancelled"
+  project=$(printf '%s\n' "$projects" | choose "Which project in $team?") || die "Cancelled"
 
   priority=$(choose "Default priority for new issues?" "Leave unset (Linear's default)" <<CHOICES
 Leave unset (Linear's default)
@@ -470,8 +652,7 @@ High
 Normal
 Low
 CHOICES
-)
-  [[ -n $priority ]] || die "Cancelled"
+) || die "Cancelled"
 
   local args=(use "$team" "$project")
   case $priority in
@@ -511,8 +692,7 @@ top-right
 bottom-left
 bottom-right
 CHOICES
-)
-  [[ -n $position ]] || die "Cancelled"
+) || die "Cancelled"
 
   info "Frame styling grows the panel out of the desktop frame: no borders on the"
   info "edges it is attached to, and concave fillets where it leaves the frame."
@@ -554,7 +734,7 @@ configure_keybind() {
     }
   fi
 
-  chord=$(ask "Key combination" "SUPER + SHIFT + L")
+  chord=$(ask "Key combination" "SUPER + SHIFT + L") || die "No key combination given"
   chord=$(printf '%s' "$chord" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [[ -n $chord ]] || die "No key combination given"
 
@@ -577,7 +757,7 @@ configure_keybind() {
 
   mkdir -p "$(dirname "$BINDINGS")"
   [[ -f $BINDINGS ]] || printf -- '-- Personal bindings layered over Omarchy defaults.\n' >"$BINDINGS"
-  cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+  backup_file "$BINDINGS"
 
   remove_managed_block
 
@@ -661,7 +841,7 @@ summary() {
 while (($# > 0)); do
   case $1 in
   -h | --help)
-    sed -n '3,22p' "$0" | sed 's/^# \?//'
+    usage
     exit 0
     ;;
   --reconfigure) RECONFIGURE=1 ;;
@@ -673,15 +853,15 @@ done
 
 printf '\n\033[1mLinear for the Omarchy bar\033[0m\n'
 if ((ASSUME_YES)); then
-  printf 'Taking every default: missing pieces are filled in, settled ones left alone.\n'
+  printf 'Taking safe defaults: settled choices stay; account-specific gaps are reported.\n'
 else
-  printf 'Nothing is written until each question is answered.\n'
+  printf 'Changes are applied step by step; cancel safely, then re-run to continue.\n'
 fi
 
 require_terminal
 check_deps
 place_plugin
-[[ -x $SETUP ]] || die "Missing $SETUP after install"
+[[ -x $SETUP ]] || die "$SETUP is missing. Installed copy at $TARGET is incomplete; re-run and accept the overwrite."
 enable_widget
 store_key
 pick_target

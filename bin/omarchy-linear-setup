@@ -28,6 +28,23 @@ die() {
   exit 1
 }
 
+# Keep three newest backups for files this helper manages.
+backup_file() { # $1 = path
+  local file=$1 i remove_count nullglob_was_set=0
+  local backups=()
+  local backup="$file.bak.$(date +%s%N)"
+  cp -- "$file" "$backup"
+
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  backups=("$file".bak.*)
+  ((nullglob_was_set)) || shopt -u nullglob
+  remove_count=$((${#backups[@]} - 3))
+  for ((i = 0; i < remove_count; i++)); do
+    rm -f -- "${backups[i]}"
+  done
+}
+
 usage() {
   sed -n '3,10p' "$0" | sed 's/^# \?//'
 }
@@ -72,23 +89,35 @@ query() {
 }
 
 cmd_key() {
-  command -v secret-tool >/dev/null 2>&1 ||
-    die "secret-tool not installed; write the key to $TOKEN_FILE with mode 600 instead"
-
   # stdin can be a pipe when this runs from the installer's own bootstrap, so
   # the prompt takes the terminal directly.
-  local key=""
-  if [[ -r /dev/tty ]]; then
-    read -rsp "Linear API key: " key </dev/tty
+  local key="" tty_fd
+  if { exec {tty_fd}</dev/tty; } 2>/dev/null; then
+    read -rsp "Linear API key: " key <&"$tty_fd" || {
+      exec {tty_fd}<&-
+      return 1
+    }
+    exec {tty_fd}<&-
   else
-    read -rsp "Linear API key: " key
+    read -rsp "Linear API key: " key || return 1
   fi
   echo
   [[ -n $key ]] || die "No key entered"
 
-  printf '%s' "$key" |
-    secret-tool store --label='Linear API key' service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT"
-  echo "Stored in the login keyring."
+  if command -v secret-tool >/dev/null 2>&1; then
+    printf '%s' "$key" |
+      secret-tool store --label='Linear API key' service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT"
+    echo "Stored in the login keyring."
+    return 0
+  fi
+
+  local token_dir
+  token_dir=$(dirname "$TOKEN_FILE")
+  mkdir -p "$token_dir"
+  (umask 077; printf '%s\n' "$key" >"$TOKEN_FILE.tmp")
+  chmod 600 "$TOKEN_FILE.tmp"
+  mv "$TOKEN_FILE.tmp" "$TOKEN_FILE"
+  echo "No keyring available; stored in $TOKEN_FILE with mode 600."
 }
 
 cmd_check() {
@@ -196,7 +225,7 @@ LUA
     echo "Config already up to date."
   else
     if [[ -f $CONFIG ]]; then
-      cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
+      backup_file "$CONFIG"
       echo "Backed up the existing config."
     fi
     # Written through a temp file: a truncating redirect that is interrupted

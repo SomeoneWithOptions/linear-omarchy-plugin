@@ -23,10 +23,17 @@ readonly STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/linear
 readonly TOKEN_FILE=${LINEAR_OMARCHY_TOKEN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linear/token}
 readonly DATA_DIR=$(dirname "$TOKEN_FILE")
 
-SRC=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+  SOURCE_PATH=${BASH_SOURCE[0]}
+  SRC=$(cd -- "$(dirname -- "$SOURCE_PATH")" && pwd)
+else
+  SOURCE_PATH=""
+  SRC=""
+fi
 # The id survives the relocation below, where the manifest is no longer next to
 # the script.
-PLUGIN_ID=${LINEAR_UNINSTALL_ID:-$(jq -r '.id // empty' "$SRC/manifest.json" 2>/dev/null || true)}
+PLUGIN_ID=${LINEAR_UNINSTALL_ID:-}
+[[ -n $PLUGIN_ID || -z $SRC ]] || PLUGIN_ID=$(jq -r '.id // empty' "$SRC/manifest.json" 2>/dev/null || true)
 PLUGIN_ID=${PLUGIN_ID:-andres.linear}
 TARGET="$PLUGINS_DIR/$PLUGIN_ID"
 ASSUME_YES=0
@@ -47,17 +54,47 @@ ok() { printf '   \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '   \033[33m!\033[0m %s\n' "$1"; }
 skipped() { printf '   \033[2m·\033[0m %s\n' "$1"; }
 
+# Keep three newest backups for files this uninstaller manages.
+backup_file() { # $1 = path
+  local file=$1 i remove_count nullglob_was_set=0
+  local backups=()
+  cp -- "$file" "$file.bak.$(date +%s%N)"
+
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  backups=("$file".bak.*)
+  ((nullglob_was_set)) || shopt -u nullglob
+  remove_count=$((${#backups[@]} - 3))
+  for ((i = 0; i < remove_count; i++)); do
+    rm -f -- "${backups[i]}"
+  done
+}
+
+usage() {
+  cat <<'USAGE'
+Removes Linear bar plugin and its local data.
+
+Usage:
+  ./uninstall.sh          ask before each removal
+  ./uninstall.sh --yes    remove everything without asking
+  curl -fsSL <raw-url>/uninstall.sh | bash
+USAGE
+}
+
 confirm() { # $1 = question, $2 = default (y/n)
-  local answer default=${2:-y}
+  local answer default=${2:-y} tty_fd
   ((ASSUME_YES)) && return 0
-  [[ -t 0 ]] || die "Not a terminal and no --yes; refusing to guess"
+  if ! { exec {tty_fd}<>/dev/tty; } 2>/dev/null; then
+    die "No terminal and no --yes; refusing to guess"
+  fi
+  exec {tty_fd}>&-
   if command -v gum >/dev/null 2>&1; then
     if [[ $default == y ]]; then
       gum confirm "$1" && return 0 || return 1
     fi
     gum confirm --default=false "$1" && return 0 || return 1
   fi
-  read -rp "   $1 [$( [[ $default == y ]] && echo 'Y/n' || echo 'y/N')] " answer </dev/tty
+  read -rp "   $1 [$( [[ $default == y ]] && echo 'Y/n' || echo 'y/N')] " answer </dev/tty || return 1
   answer=${answer:-$default}
   [[ ${answer,,} == y* ]]
 }
@@ -76,7 +113,7 @@ remove_keybind() {
 
   if grep -qF -- "$BIND_BEGIN" "$BINDINGS"; then
     if confirm "Remove the managed keybind block from bindings.lua?"; then
-      cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+      backup_file "$BINDINGS"
       # Swallows the blank line the block was appended after too, so an
       # install/uninstall cycle leaves bindings.lua as it found it.
       awk -v begin="$BIND_BEGIN" -v end="$BIND_END" '
@@ -107,7 +144,7 @@ remove_keybind() {
     warn "bindings.lua still mentions $PLUGIN_ID:"
     printf '%s\n' "$hand_written" | sed 's/^/     /'
     if confirm "Delete those lines?" n; then
-      cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+      backup_file "$BINDINGS"
       grep -vF -- "$PLUGIN_ID" "$BINDINGS" >"$BINDINGS.tmp"
       mv "$BINDINGS.tmp" "$BINDINGS"
       ok "Lines deleted; any comment above them is left for you to read"
@@ -184,7 +221,7 @@ prune_shell_config() {
     return
   }
 
-  cp "$SHELL_CONFIG" "$SHELL_CONFIG.bak.$(date +%s)"
+  backup_file "$SHELL_CONFIG"
   jq --arg id "$PLUGIN_ID" '
     (.bar.layout // {}) |= with_entries(.value |= map(select((.id // "") != $id)))
     | (if has("plugins") then .plugins |= map(select((.id // "") != $id)) else . end)
@@ -269,7 +306,7 @@ restart_shell() {
 
 case ${1-} in
 -h | --help)
-  sed -n '3,9p' "$0" | sed 's/^# \?//'
+  usage
   exit 0
   ;;
 --yes | -y) ASSUME_YES=1 ;;
@@ -279,9 +316,9 @@ esac
 
 # The script may be sitting inside the folder it is about to delete, and bash
 # reads a script in chunks as it runs, so run from a copy in that case.
-if [[ ${LINEAR_UNINSTALL_RELOCATED-} != 1 && $SRC == "$TARGET" ]]; then
+if [[ ${LINEAR_UNINSTALL_RELOCATED-} != 1 && -n $SRC && $SRC == "$TARGET" ]]; then
   relocated=$(mktemp -t omarchy-linear-uninstall.XXXXXX.sh)
-  cat "$SRC/$(basename -- "${BASH_SOURCE[0]}")" >"$relocated"
+  cat "$SOURCE_PATH" >"$relocated"
   chmod +x "$relocated"
   LINEAR_UNINSTALL_RELOCATED=1 LINEAR_UNINSTALL_ID="$PLUGIN_ID" exec "$relocated" "$@"
 fi
@@ -289,7 +326,7 @@ fi
 # The copy has been read in full by the time the shell exits, so it can clean
 # itself up then.
 if [[ ${LINEAR_UNINSTALL_RELOCATED-} == 1 ]]; then
-  trap 'rm -f -- "${BASH_SOURCE[0]}"' EXIT
+  trap 'rm -f -- "$SOURCE_PATH"' EXIT
 fi
 
 # The working directory may be inside the folder about to be deleted, and every
