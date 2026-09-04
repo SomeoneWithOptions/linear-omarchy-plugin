@@ -24,6 +24,9 @@
 
 set -euo pipefail
 
+# Package-heavy bootstraps can make Quickshell exceed Omarchy's 2s IPC default.
+export OMARCHY_SHELL_IPC_TIMEOUT=${OMARCHY_SHELL_IPC_TIMEOUT:-10s}
+
 readonly REPO_URL="https://github.com/SomeoneWithOptions/linear-omarchy-plugin.git"
 readonly PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 readonly SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
