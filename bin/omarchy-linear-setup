@@ -6,8 +6,8 @@
 #   omarchy-linear-setup key                  store the API key in the keyring
 #   omarchy-linear-setup check                verify the key and show the account
 #   omarchy-linear-setup list [--json]        list teams and their projects
-#   omarchy-linear-setup use <team> <project> [--priority 0-4]
-#                            [--assignee me|<email>]
+#   omarchy-linear-setup use --team <team> --project <project>
+#                            [--priority 0-4] [--assignee me|<email>]
 #                                             write config.lua for that target
 #
 # Kept separate from omarchy-linear-issue-create so the hot path the bar calls
@@ -158,6 +158,16 @@ cmd_use() {
 
   while (($# > 0)); do
     case $1 in
+    --team)
+      team=${2-}
+      [[ -n $team && $team != --* ]] || die "--team takes a team name"
+      shift 2
+      ;;
+    --project)
+      project=${2-}
+      [[ -n $project && $project != --* ]] || die "--project takes a project name"
+      shift 2
+      ;;
     --priority)
       priority=${2-}
       [[ $priority =~ ^[0-4]$ ]] || die "--priority takes 0 none, 1 urgent, 2 high, 3 normal, 4 low"
@@ -171,18 +181,17 @@ cmd_use() {
       [[ ${assignee,,} == me ]] && assignee=me
       shift 2
       ;;
+    -*) die "Unknown option: $1" ;;
     *)
-      if [[ -z $team ]]; then team=$1
-      elif [[ -z $project ]]; then project=$1
-      else die "Unexpected argument: $1"
-      fi
-      shift
+      # The positional form was dropped; say what replaced it rather than
+      # guessing which of the two names this one was meant to be.
+      die "Unexpected argument: $1. Team and project are flags now: $(basename "$0") use --team \"Team\" --project \"Project\""
       ;;
     esac
   done
 
   [[ -n $team && -n $project ]] ||
-    die "Usage: $(basename "$0") use <team> <project> [--priority 0-4] [--assignee me|<email>]"
+    die "Usage: $(basename "$0") use --team <team> --project <project> [--priority 0-4] [--assignee me|<email>]"
 
   TOKEN=$(read_token)
   local response team_id project_id assignee_id=""

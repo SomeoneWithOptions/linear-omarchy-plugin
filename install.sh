@@ -2,8 +2,8 @@
 
 # Interactive installer for the Linear bar plugin.
 #
-# Walks through dependencies, plugin placement, the API key, the issue target,
-# panel styling and the keybind, asking for every preference rather than
+# Walks through dependencies, plugin placement, the commands on PATH, the API
+# key, the issue target, panel styling and the keybind, asking for every preference rather than
 # assuming one. Everything it writes outside the plugin folder is undone by
 # uninstall.sh.
 #
@@ -37,6 +37,8 @@ readonly BIND_END="-- <<< linear-omarchy-plugin <<<"
 readonly KEYRING_SERVICE="linear-omarchy"
 readonly KEYRING_ACCOUNT="api"
 readonly TOKEN_FILE=${LINEAR_OMARCHY_TOKEN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linear/token}
+readonly BIN_DIR="$HOME/.local/bin"
+readonly COMMANDS=(omarchy-linear-setup omarchy-linear-issue-create)
 
 # When read from stdin (`curl | bash`), BASH_SOURCE is empty. Do not fall back
 # to the working directory: a stray manifest there must not become the plugin.
@@ -56,6 +58,9 @@ PLUGIN_ID=""
 PLUGIN_ID=${PLUGIN_ID:-andres.linear}
 TARGET="$PLUGINS_DIR/$PLUGIN_ID"
 SETUP="$TARGET/bin/omarchy-linear-setup"
+# What the printed hints call the setup helper: the bare name once it is linked
+# onto PATH, the full path until then.
+SETUP_HINT=$SETUP
 
 step_no=0
 
@@ -510,7 +515,71 @@ copy_plugin() {
   ok "Copied into $TARGET"
 }
 
-# --------------------------------------------------------------- 3. bar widget
+# ----------------------------------------------------------------- 3. commands
+
+# Symlinks rather than copies, so `omarchy plugin update` and a re-copied
+# checkout are picked up without relinking. The bar itself keeps calling the
+# helper by its plugin path: the Hyprland session PATH need not include
+# ~/.local/bin, and the hot path should not depend on it.
+link_commands() {
+  step "Commands on PATH"
+
+  local name link want current missing=() foreign=()
+  for name in "${COMMANDS[@]}"; do
+    link="$BIN_DIR/$name"
+    want="$TARGET/bin/$name"
+    if [[ -L $link ]]; then
+      current=$(readlink -- "$link")
+      [[ $current == "$want" ]] && continue
+      # A link into this plugin folder is ours even when it names an old file.
+      if [[ $current == "$TARGET"/* ]]; then
+        missing+=("$name")
+        continue
+      fi
+      foreign+=("$name")
+    elif [[ -e $link ]]; then
+      foreign+=("$name")
+    else
+      missing+=("$name")
+    fi
+  done
+
+  # Something else by the same name is the user's own, so it is named and left.
+  for name in "${foreign[@]}"; do
+    warn "$BIN_DIR/$name exists and is not this plugin's link; leaving it alone"
+  done
+
+  if ((${#missing[@]})); then
+    if confirm "Link ${missing[*]} into $BIN_DIR?"; then
+      mkdir -p "$BIN_DIR"
+      for name in "${missing[@]}"; do
+        ln -sfn -- "$TARGET/bin/$name" "$BIN_DIR/$name"
+        ok "Linked $BIN_DIR/$name"
+      done
+    else
+      info "Skipped. The commands stay reachable at $TARGET/bin/"
+      return 0
+    fi
+  elif ((${#foreign[@]} == 0)); then
+    ok "Already linked into $BIN_DIR"
+  fi
+
+  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    warn "$BIN_DIR is not on your PATH, so the commands only run by full path."
+    case ${SHELL##*/} in
+    fish) info "Add it with: fish_add_path ~/.local/bin" ;;
+    zsh) info "Add to ~/.zshrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+    *) info "Add to ~/.bashrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+    esac
+    return 0
+  fi
+
+  [[ $(readlink -- "$BIN_DIR/omarchy-linear-setup" 2>/dev/null) == "$SETUP" ]] &&
+    SETUP_HINT=omarchy-linear-setup
+  return 0
+}
+
+# --------------------------------------------------------------- 4. bar widget
 
 enable_widget() {
   step "Bar placement"
@@ -558,7 +627,7 @@ wait_for_plugin() {
   return 0
 }
 
-# ------------------------------------------------------------------ 4. api key
+# ------------------------------------------------------------------ 5. api key
 
 stored_key() {
   local key=""
@@ -601,7 +670,7 @@ store_key() {
     info "and project names can be resolved to UUIDs."
     if ((ASSUME_YES)); then
       warn "No API key is stored; skipping account setup in unattended mode."
-      info "Configure later with: $SETUP key"
+      info "Configure later with: $SETUP_HINT key"
       return 0
     fi
   fi
@@ -609,7 +678,7 @@ store_key() {
   prompt_for_key || die "Could not store the key"
 }
 
-# ------------------------------------------------------------- 5. issue target
+# ------------------------------------------------------------- 6. issue target
 
 # The team and project lists come from the account itself, so the target is
 # picked rather than typed and cannot be a name Linear does not have.
@@ -629,7 +698,7 @@ pick_target() {
     ((RECONFIGURE)) || confirm "Change the target?" n || return 0
   elif ((ASSUME_YES)); then
     warn "No issue target is configured; skipping account setup in unattended mode."
-    info "Configure later with: $SETUP use \"Team\" \"Project\""
+    info "Configure later with: $SETUP_HINT use --team \"Team\" --project \"Project\""
     return 0
   fi
 
@@ -668,7 +737,7 @@ Someone else, by email
 CHOICES
 ) || die "Cancelled"
 
-  local args=(use "$team" "$project")
+  local args=(use --team "$team" --project "$project")
   case $priority in
   "No priority") args+=(--priority 0) ;;
   Urgent) args+=(--priority 1) ;;
@@ -690,7 +759,7 @@ CHOICES
   ok "Target: $team › $project"
 }
 
-# ---------------------------------------------------------------- 6. the panel
+# ---------------------------------------------------------------- 7. the panel
 
 configure_panel() {
   step "Panel style"
@@ -730,7 +799,7 @@ CHOICES
   bar_set_if_changed frameStyle "$frame" --json
 }
 
-# ------------------------------------------------------------------ 7. keybind
+# ------------------------------------------------------------------ 8. keybind
 
 configure_keybind() {
   step "Keybind"
@@ -820,7 +889,7 @@ remove_managed_block() {
   mv "$BINDINGS.tmp" "$BINDINGS"
 }
 
-# ------------------------------------------------------------------ 8. wrap up
+# ------------------------------------------------------------------ 9. wrap up
 
 restart_shell() {
   step "Restarting the shell"
@@ -854,11 +923,11 @@ summary() {
   target=$(current_target) || target=""
   if [[ -n $target ]]; then
     printf '\n\033[1mDone.\033[0m Click the Linear icon in the bar to file an issue.\n'
-    printf 'Change the target later with: %s use "Team" "Project"\n' "$SETUP"
+    printf 'Change the target later with: %s use --team "Team" --project "Project"\n' "$SETUP_HINT"
   else
     printf '\n\033[1mInstalled.\033[0m Account setup remains:\n'
-    printf '  %s key\n' "$SETUP"
-    printf '  %s use "Team" "Project"\n' "$SETUP"
+    printf '  %s key\n' "$SETUP_HINT"
+    printf '  %s use --team "Team" --project "Project"\n' "$SETUP_HINT"
   fi
   local uninstaller="$SRC/uninstall.sh"
   ((BOOTSTRAP)) && uninstaller="$TARGET/uninstall.sh"
@@ -892,6 +961,7 @@ require_terminal
 check_deps
 place_plugin
 [[ -x $SETUP ]] || die "$SETUP is missing. Installed copy at $TARGET is incomplete; re-run and accept the overwrite."
+link_commands
 enable_widget
 store_key
 pick_target

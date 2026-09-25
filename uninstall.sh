@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Removes the Linear bar plugin and everything it put on this machine: the
-# plugin folder, the bar entry and its settings, the keybind, the config, the
-# resolved-id cache and the API key in both the keyring and the file fallback.
+# plugin folder, the command links in ~/.local/bin, the bar entry and its
+# settings, the keybind, the config, the resolved-id cache and the API key in
+# both the keyring and the file fallback.
 #
 # Usage:
 #   ./uninstall.sh          ask before each removal
@@ -17,6 +18,8 @@ readonly BIND_BEGIN="-- >>> linear-omarchy-plugin (managed keybind) >>>"
 readonly BIND_END="-- <<< linear-omarchy-plugin <<<"
 readonly KEYRING_SERVICE="linear-omarchy"
 readonly KEYRING_ACCOUNT="api"
+readonly BIN_DIR="$HOME/.local/bin"
+readonly COMMANDS=(omarchy-linear-setup omarchy-linear-issue-create)
 
 readonly CONFIG_DIR="$HOME/.config/omarchy/linear"
 readonly STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/linear
@@ -164,6 +167,33 @@ remove_keybind() {
     fi
   elif ((block_left == 0)); then
     skipped "No keybind to remove"
+  fi
+}
+
+# ------------------------------------------------------------------ commands
+
+# Only a link that points into this plugin folder is ours. A file by the same
+# name is the user's own and is left alone.
+remove_commands() {
+  step "Commands"
+
+  local name link ours=()
+  for name in "${COMMANDS[@]}"; do
+    link="$BIN_DIR/$name"
+    [[ -L $link && $(readlink -- "$link") == "$TARGET"/* ]] && ours+=("$link")
+  done
+
+  if ((${#ours[@]} == 0)); then
+    skipped "No command links in $BIN_DIR"
+    return
+  fi
+
+  printf '     %s\n' "${ours[@]}"
+  if confirm "Remove these links?"; then
+    rm -f -- "${ours[@]}"
+    ok "Links removed"
+  else
+    skipped "Links kept"
   fi
 }
 
@@ -335,6 +365,7 @@ cd /
 
 printf '\n\033[1mRemoving Linear from the Omarchy bar\033[0m\n'
 info "Plugin:   $TARGET"
+info "Commands: $BIN_DIR/omarchy-linear-*"
 info "Config:   $CONFIG_DIR"
 info "Cache:    $STATE_DIR"
 info "Key:      login keyring ($KEYRING_SERVICE/$KEYRING_ACCOUNT), $TOKEN_FILE"
@@ -345,6 +376,7 @@ if ((ASSUME_YES == 0)); then
 fi
 
 remove_keybind
+remove_commands
 remove_plugin
 prune_shell_config
 remove_config

@@ -34,13 +34,20 @@ clone it offers that same clone or a copy of your working tree — take the copy
 when you are developing against it.
 
 The installer asks for every preference rather than assuming one: bar section,
-API key, which team and project to file into, the default priority and assignee, the panel
-corner, frame styling, and the keybind. Teams and projects are read from your
-own Linear account and picked from a list, so the target cannot be a name
-Linear does not have. Changes are applied step by step, so cancelling preserves
+whether to link the commands into `~/.local/bin`, API key, which team and
+project to file into, the default priority and assignee, the panel corner,
+frame styling, and the keybind. Teams and projects are read from your own
+Linear account and picked from a list, so the target cannot be a name Linear
+does not have. Changes are applied step by step, so cancelling preserves
 completed steps and a rerun continues from that state. It backs up
 `bindings.lua` before touching it, then restarts the shell and verifies the key
 and target.
+
+`omarchy-linear-setup` and `omarchy-linear-issue-create` are symlinked into
+`~/.local/bin`, so they follow `omarchy plugin update` without relinking. A file
+already there under either name is left alone. If `~/.local/bin` is not on your
+`PATH` the installer says so and prints the line to add; it does not edit your
+shell's rc files. The bar itself still calls the helper by its plugin path.
 
 It is safe to run again. Every step reads what is already on the machine — the
 bar entry in `shell.json`, the key in the keyring, the config, the managed
@@ -65,7 +72,8 @@ curl -fsSL https://raw.githubusercontent.com/SomeoneWithOptions/linear-omarchy-p
 choices alone, and repairs an incomplete plugin copy. It will not invent a
 Linear API key or choose a team/project from an account-specific list. Missing
 account setup is reported and skipped; finish it later with
-`omarchy-linear-setup key` and `omarchy-linear-setup use "Team" "Project"`.
+`omarchy-linear-setup key` and
+`omarchy-linear-setup use --team "Team" --project "Project"`.
 Use `--reconfigure` to change an answer you have already given.
 
 ### By hand
@@ -74,9 +82,13 @@ Use `--reconfigure` to change an answer you have already given.
 omarchy plugin add https://github.com/SomeoneWithOptions/linear-omarchy-plugin.git
 omarchy plugin enable andres.linear --section right
 
-~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup key
-~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup list
-~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup use "Personal" "Work" --priority 3
+mkdir -p ~/.local/bin
+ln -s ~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-setup ~/.local/bin/
+ln -s ~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-issue-create ~/.local/bin/
+
+omarchy-linear-setup key
+omarchy-linear-setup list
+omarchy-linear-setup use --team "Personal" --project "Work" --priority 3
 ```
 
 Add the keybind to `~/.config/hypr/bindings.lua`:
@@ -98,7 +110,8 @@ Or over curl, which needs no local copy either:
 bash <(curl -fsSL https://raw.githubusercontent.com/SomeoneWithOptions/linear-omarchy-plugin/main/uninstall.sh)
 ```
 
-This takes the whole footprint off the machine: the plugin folder, the bar
+This takes the whole footprint off the machine: the plugin folder, the command
+links in `~/.local/bin` (only links that point into the plugin folder), the bar
 entry and its widget settings in `shell.json`, the managed keybind block, the
 config and its backups, the resolved-id cache, and the API key from both the
 login keyring and the file fallback. A key file is overwritten with `shred`
@@ -157,8 +170,8 @@ return {
 Linear's API only accepts an assignee as a user UUID. The plugin resolves
 `"me"` to the key's own user and anything else by email — the one user field
 Linear keeps unique; display names are not — and caches the UUID alongside the
-team and project. Set it with `omarchy-linear-setup use "Team" "Project"
---assignee me` (or `--assignee someone@example.com`).
+team and project. Set it with `omarchy-linear-setup use --team "Team"
+--project "Project" --assignee me` (or `--assignee someone@example.com`).
 
 Names are the source of truth. Resolved UUIDs are cached in
 `~/.local/state/omarchy/linear/ids.json`, keyed by those names, so renaming a
@@ -236,7 +249,7 @@ the shell never blocks on the Linear API. That helper owns both the success and
 the failure notification, which is also why it works standalone:
 
 ```bash
-bin/omarchy-linear-issue-create "Fix the login redirect"
+omarchy-linear-issue-create "Fix the login redirect"
 ```
 
 ## License
