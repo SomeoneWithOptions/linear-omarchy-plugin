@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Create a Linear issue in the team and project named in config.lua, then
-# report the result as a desktop notification whose click opens the ticket.
+# Create a Linear issue in the team and project named in config.lua, assigned
+# to its assignee if one is set, then report the result as a desktop
+# notification whose click opens the ticket.
 #
 # Usage:
 #   omarchy-linear-issue-create "Fix the login redirect"
@@ -30,8 +31,11 @@ cfg_project=""
 cfg_team_id=""
 cfg_project_id=""
 cfg_priority=""
+cfg_assignee=""
+cfg_assignee_id=""
 team_id=""
 project_id=""
+assignee_id=""
 TOKEN=""
 
 # Failures reach the user as a notification, because the caller is a bar popup
@@ -60,6 +64,8 @@ read_config() {
     put("team_id", cfg.team_id)
     put("project_id", cfg.project_id)
     put("priority", cfg.priority)
+    put("assignee", cfg.assignee)
+    put("assignee_id", cfg.assignee_id)
   ') || die "Could not read $CONFIG"
 
   local key value
@@ -70,6 +76,8 @@ read_config() {
     team_id) cfg_team_id=$value ;;
     project_id) cfg_project_id=$value ;;
     priority) cfg_priority=$value ;;
+    assignee) cfg_assignee=$value ;;
+    assignee_id) cfg_assignee_id=$value ;;
     esac
   done <<<"$out"
 
@@ -117,9 +125,13 @@ api_error() {
 # team and project and matching here: Linear budgets a query by how many nodes
 # it could return, and an unfiltered teams-with-projects query blows that budget
 # outright ("Query too complex").
+#
+# The assignee rides along in the same round trip: "me" is the key's own user,
+# anything else is matched by email, the one user attribute Linear keeps unique.
 lookup_ids() {
   local query payload response err
-  query='query ResolveTarget($team: String!, $project: String!) {
+  query='query ResolveTarget($team: String!, $project: String!, $email: String!,
+                           $me: Boolean!, $byEmail: Boolean!) {
     teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
       nodes {
         id
@@ -129,25 +141,41 @@ lookup_ids() {
         }
       }
     }
+    viewer @include(if: $me) { id }
+    users(first: 1, filter: { email: { eqIgnoreCase: $email } }) @include(if: $byEmail) {
+      nodes { id }
+    }
   }'
 
   payload=$(jq -n --arg q "$query" --arg team "$cfg_team" --arg project "$cfg_project" \
-    '{query: $q, variables: {team: $team, project: $project}}')
+    --arg assignee "$cfg_assignee" '
+    ($assignee | ascii_downcase) as $a
+    | {query: $q, variables: {team: $team, project: $project,
+        me: ($a == "me"), byEmail: ($a != "" and $a != "me"),
+        email: (if $a == "me" then "" else $assignee end)}}')
 
   response=$(api "$payload") || die "Could not reach the Linear API"
   err=$(api_error "$response")
   [[ -z $err ]] || die "$err"
 
-  team_id=$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")
+  # Pinned UUIDs win; the lookup then only exists to resolve the assignee.
+  team_id=${cfg_team_id:-$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")}
   [[ -n $team_id ]] || die "No Linear team named \"$cfg_team\""
 
-  project_id=$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")
+  project_id=${cfg_project_id:-$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")}
   [[ -n $project_id ]] || die "No project named \"$cfg_project\" in team \"$cfg_team\""
+
+  if [[ -n $cfg_assignee ]]; then
+    assignee_id=$(jq -r '(.data.viewer.id // .data.users.nodes[0].id) // empty' <<<"$response")
+    [[ -n $assignee_id ]] || die "No Linear user with email \"$cfg_assignee\""
+  fi
 
   mkdir -p "$CACHE_DIR"
   jq -n --arg team "$cfg_team" --arg project "$cfg_project" \
     --arg team_id "$team_id" --arg project_id "$project_id" \
-    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id}' >"$CACHE.tmp"
+    --arg assignee "$cfg_assignee" --arg assignee_id "$assignee_id" \
+    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id,
+      assignee: $assignee, assignee_id: $assignee_id}' >"$CACHE.tmp"
   chmod 600 "$CACHE.tmp"
   mv "$CACHE.tmp" "$CACHE"
 }
@@ -155,18 +183,26 @@ lookup_ids() {
 # Names in config.lua are the source of truth; UUIDs are a cache keyed by those
 # names, so renaming a project in Linear re-resolves instead of going stale.
 resolve_ids() {
-  if [[ -n $cfg_team_id && -n $cfg_project_id ]]; then
+  # A pinned assignee_id needs no lookup, so it drops out of the name match.
+  if [[ -n $cfg_assignee_id ]]; then
+    assignee_id=$cfg_assignee_id
+    cfg_assignee=""
+  fi
+
+  if [[ -n $cfg_team_id && -n $cfg_project_id && ( -n $assignee_id || -z $cfg_assignee ) ]]; then
     team_id=$cfg_team_id
     project_id=$cfg_project_id
     return
   fi
 
   if [[ -f $CACHE ]] &&
-    [[ $(jq -r --arg t "$cfg_team" --arg p "$cfg_project" \
-      'if .team == $t and .project == $p then "hit" else "miss" end' "$CACHE" 2>/dev/null) == hit ]]; then
+    [[ $(jq -r --arg t "$cfg_team" --arg p "$cfg_project" --arg a "$cfg_assignee" \
+      'if .team == $t and .project == $p and (.assignee // "") == $a
+       then "hit" else "miss" end' "$CACHE" 2>/dev/null) == hit ]]; then
     team_id=$(jq -r '.team_id // empty' "$CACHE")
     project_id=$(jq -r '.project_id // empty' "$CACHE")
-    [[ -n $team_id && -n $project_id ]] && return 0
+    [[ -n $cfg_assignee ]] && assignee_id=$(jq -r '.assignee_id // empty' "$CACHE")
+    [[ -n $team_id && -n $project_id && ( -z $cfg_assignee || -n $assignee_id ) ]] && return 0
   fi
 
   lookup_ids
@@ -183,11 +219,13 @@ create_issue() {
     --arg title "$title" \
     --arg team "$team_id" \
     --arg project "$project_id" \
+    --arg assignee "$assignee_id" \
     --argjson priority "${cfg_priority:-null}" '
     { query: $q,
       variables: { input: (
         { title: $title, teamId: $team, projectId: $project }
         + (if $priority == null then {} else { priority: $priority } end)
+        + (if $assignee == "" then {} else { assigneeId: $assignee } end)
       ) } }')
 
   response=$(api "$payload") || die "Could not reach the Linear API"
@@ -211,7 +249,7 @@ if [[ ${1-} == "--target" ]]; then
 fi
 
 if [[ ${1-} == "-h" || ${1-} == "--help" ]]; then
-  sed -n '3,12p' "$0" | sed 's/^# \?//'
+  sed -n '3,13p' "$0" | sed 's/^# \?//'
   exit 0
 fi
 

@@ -616,7 +616,7 @@ store_key() {
 pick_target() {
   step "Issue target"
 
-  local teams team projects project priority existing
+  local teams team projects project priority assignee email existing
   # Asking Linear for the team list costs a round trip and rewriting the config
   # costs a backup file, so neither happens when the target is already usable.
   existing=$(current_target) || existing=""
@@ -661,6 +661,13 @@ Low
 CHOICES
 ) || die "Cancelled"
 
+  assignee=$(choose "Assign new issues to?" "Leave unassigned" <<CHOICES
+Leave unassigned
+Me (the API key's user)
+Someone else, by email
+CHOICES
+) || die "Cancelled"
+
   local args=(use "$team" "$project")
   case $priority in
   "No priority") args+=(--priority 0) ;;
@@ -668,6 +675,14 @@ CHOICES
   High) args+=(--priority 2) ;;
   Normal) args+=(--priority 3) ;;
   Low) args+=(--priority 4) ;;
+  esac
+  case $assignee in
+  Me*) args+=(--assignee me) ;;
+  Someone*)
+    email=$(ask "Assignee's Linear email") || die "Cancelled"
+    [[ -n $email ]] || die "No email entered"
+    args+=(--assignee "$email")
+    ;;
   esac
 
   "$SETUP" "${args[@]}" || die "Could not write the config"

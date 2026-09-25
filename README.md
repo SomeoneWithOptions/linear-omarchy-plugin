@@ -34,7 +34,7 @@ clone it offers that same clone or a copy of your working tree — take the copy
 when you are developing against it.
 
 The installer asks for every preference rather than assuming one: bar section,
-API key, which team and project to file into, the default priority, the panel
+API key, which team and project to file into, the default priority and assignee, the panel
 corner, frame styling, and the keybind. Teams and projects are read from your
 own Linear account and picked from a list, so the target cannot be a name
 Linear does not have. Changes are applied step by step, so cancelling preserves
@@ -147,8 +147,18 @@ return {
 
   -- Optional default priority: 0 none, 1 urgent, 2 high, 3 normal, 4 low.
   -- priority = 3,
+
+  -- Optional assignee: "me" (the API key's user) or a user's email.
+  -- assignee = "me",
+  -- assignee_id = "…",
 }
 ```
+
+Linear's API only accepts an assignee as a user UUID. The plugin resolves
+`"me"` to the key's own user and anything else by email — the one user field
+Linear keeps unique; display names are not — and caches the UUID alongside the
+team and project. Set it with `omarchy-linear-setup use "Team" "Project"
+--assignee me` (or `--assignee someone@example.com`).
 
 Names are the source of truth. Resolved UUIDs are cached in
 `~/.local/state/omarchy/linear/ids.json`, keyed by those names, so renaming a

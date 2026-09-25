@@ -7,6 +7,7 @@
 #   omarchy-linear-setup check                verify the key and show the account
 #   omarchy-linear-setup list [--json]        list teams and their projects
 #   omarchy-linear-setup use <team> <project> [--priority 0-4]
+#                            [--assignee me|<email>]
 #                                             write config.lua for that target
 #
 # Kept separate from omarchy-linear-issue-create so the hot path the bar calls
@@ -46,7 +47,7 @@ backup_file() { # $1 = path
 }
 
 usage() {
-  sed -n '3,10p' "$0" | sed 's/^# \?//'
+  sed -n '3,11p' "$0" | sed 's/^# \?//'
 }
 
 read_token() {
@@ -153,13 +154,21 @@ cmd_list() {
 }
 
 cmd_use() {
-  local team="" project="" priority=""
+  local team="" project="" priority="" assignee=""
 
   while (($# > 0)); do
     case $1 in
     --priority)
       priority=${2-}
       [[ $priority =~ ^[0-4]$ ]] || die "--priority takes 0 none, 1 urgent, 2 high, 3 normal, 4 low"
+      shift 2
+      ;;
+    --assignee)
+      assignee=${2-}
+      [[ -n $assignee ]] || die "--assignee takes me or a user's email"
+      [[ ${assignee,,} == me || $assignee == *@* ]] ||
+        die "--assignee takes me or a user's email, not \"$assignee\""
+      [[ ${assignee,,} == me ]] && assignee=me
       shift 2
       ;;
     *)
@@ -173,11 +182,12 @@ cmd_use() {
   done
 
   [[ -n $team && -n $project ]] ||
-    die "Usage: $(basename "$0") use <team> <project> [--priority 0-4]"
+    die "Usage: $(basename "$0") use <team> <project> [--priority 0-4] [--assignee me|<email>]"
 
   TOKEN=$(read_token)
-  local response team_id project_id
-  response=$(query 'query ResolveTarget($team: String!, $project: String!) {
+  local response team_id project_id assignee_id=""
+  response=$(query 'query ResolveTarget($team: String!, $project: String!, $email: String!,
+                                        $me: Boolean!, $byEmail: Boolean!) {
     teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
       nodes {
         id
@@ -187,7 +197,14 @@ cmd_use() {
         }
       }
     }
-  }' "$(jq -n --arg team "$team" --arg project "$project" '{team: $team, project: $project}')")
+    viewer @include(if: $me) { id }
+    users(first: 1, filter: { email: { eqIgnoreCase: $email } }) @include(if: $byEmail) {
+      nodes { id }
+    }
+  }' "$(jq -n --arg team "$team" --arg project "$project" --arg assignee "$assignee" '
+    {team: $team, project: $project,
+     me: ($assignee == "me"), byEmail: ($assignee != "" and $assignee != "me"),
+     email: (if $assignee == "me" then "" else $assignee end)}')")
 
   team_id=$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")
   [[ -n $team_id ]] || die "No team named \"$team\". Run: $(basename "$0") list"
@@ -195,8 +212,19 @@ cmd_use() {
   project_id=$(jq -r '.data.teams.nodes[0].projects.nodes[0].id // empty' <<<"$response")
   [[ -n $project_id ]] || die "No project named \"$project\" in team \"$team\". Run: $(basename "$0") list"
 
+  if [[ -n $assignee ]]; then
+    assignee_id=$(jq -r '(.data.viewer.id // .data.users.nodes[0].id) // empty' <<<"$response")
+    [[ -n $assignee_id ]] || die "No Linear user with email \"$assignee\""
+  fi
+
   local priority_line="  -- priority = 3,"
   [[ -z $priority ]] || priority_line="  priority = $priority,"
+
+  local assignee_line='  -- assignee = "me",' assignee_id_line='  -- assignee_id = "…",'
+  if [[ -n $assignee ]]; then
+    assignee_line="  assignee = \"$assignee\","
+    assignee_id_line="  -- assignee_id = \"$assignee_id\","
+  fi
 
   # Rendered first and compared, so re-running with the same target neither
   # rewrites the file nor leaves another backup behind.
@@ -216,6 +244,10 @@ return {
 
   -- Default priority for new issues: 0 none, 1 urgent, 2 high, 3 normal, 4 low.
 $priority_line
+
+  -- Assign new issues to "me" (the API key's user) or a user's email.
+$assignee_line
+$assignee_id_line
 }
 LUA
   )
@@ -238,12 +270,14 @@ LUA
   mkdir -p "$CACHE_DIR"
   jq -n --arg team "$team" --arg project "$project" \
     --arg team_id "$team_id" --arg project_id "$project_id" \
-    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id}' \
+    --arg assignee "$assignee" --arg assignee_id "$assignee_id" \
+    '{team: $team, project: $project, team_id: $team_id, project_id: $project_id,
+      assignee: $assignee, assignee_id: $assignee_id}' \
     >"$CACHE_DIR/ids.json.tmp"
   chmod 600 "$CACHE_DIR/ids.json.tmp"
   mv "$CACHE_DIR/ids.json.tmp" "$CACHE_DIR/ids.json"
 
-  echo "Target: $team › $project"
+  echo "Target: $team › $project${assignee:+ · assigned to $assignee}"
 }
 
 case ${1-} in

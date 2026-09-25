@@ -15,4 +15,8 @@ return {
 
   -- Default priority for new issues: 0 none, 1 urgent, 2 high, 3 normal, 4 low.
   -- priority = 3,
+
+  -- Assign new issues to "me" (the API key's user) or to a user's email.
+  -- assignee = "me",
+  -- assignee_id = "…",   -- pin the user's UUID to skip resolution
 }
