@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // One footer affordance: a keycap plus the action it performs, clickable as
@@ -15,7 +16,7 @@ Item {
 
   property string keyLabel: ""
   property string label: ""
-  property color foreground: Color.foreground
+  property color foreground: Commons.Color.foreground
   property string fontFamily: Style.font.family
 
   // Primary rows carry the accent fill and a full-strength label; secondary
@@ -47,10 +48,10 @@ Item {
       radius: Math.max(0, Math.min(Style.cornerRadius, Style.space(4)))
 
       color: !root.active
-        ? Style.normalFillFor(root.foreground, Color.accent)
+        ? Style.normalFillFor(root.foreground, Commons.Color.accent)
         : (root.emphasized
-          ? (root.hot ? Style.pressedFillFor(root.foreground, Color.accent) : Style.selectedFillFor(root.foreground, Color.accent))
-          : (root.hot ? Style.hoverFillFor(root.foreground, Color.accent) : Style.normalFillFor(root.foreground, Color.accent)))
+          ? (root.hot ? Style.pressedFillFor(root.foreground, Commons.Color.accent) : Style.selectedFillFor(root.foreground, Commons.Color.accent))
+          : (root.hot ? Style.hoverFillFor(root.foreground, Commons.Color.accent) : Style.normalFillFor(root.foreground, Commons.Color.accent)))
 
       borderSpec: Border.controlSpec(
         !root.active
@@ -58,7 +59,7 @@ Item {
           : (root.emphasized
             ? (root.hot ? "focus" : "selected")
             : (root.hot ? "hover-cursor" : "normal")),
-        root.foreground, Color.accent)
+        root.foreground, Commons.Color.accent)
 
       Behavior on color { ColorAnimation { duration: 60 } }
 

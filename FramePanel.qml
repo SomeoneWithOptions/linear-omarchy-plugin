@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Layer-shell popup attached to a bar widget icon, designed for
@@ -48,7 +49,7 @@ PanelWindow {
   property int padding: Style.spacing.popupPadding
   property int contentWidth: Style.space(280)
   property int contentHeight: Style.space(200)
-  property var borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+  property var borderSpec: Border.surfaceSpec("popups", "border", Commons.Color.popups.border, Math.max(1, Style.space(2)))
   property bool centerOnBar: false
   property bool open: false
   // Frame styling is the default: the card overlaps the bar and grows out of
@@ -180,11 +181,7 @@ PanelWindow {
   // Clickable region is the whole screen. Clicks in the bar strip are
   // forwarded to registered bar buttons so switching between panel icons
   // works in one click even when the overlay surface is above the bar.
-  readonly property real _barStripSize: {
-    if (!bar) return 0
-    var actual = (root.barPos === "top" || root.barPos === "bottom") ? root.barH : root.barW
-    return Math.max(bar.barSize, actual) + root.gap
-  }
+  readonly property real _barStripSize: bar ? barThickness + gap : 0
 
   // A persistent panel only claims the card (plus the frame joins beside it),
   // so every click outside it reaches the window below and can focus it. The
@@ -221,7 +218,7 @@ PanelWindow {
   // full-width top bar, the content x maps directly to screen x; the y
   // returned here has the bar's internal padding baked in (e.g. ~13px
   // from vertical centering of the widget row), which is why `cardOrigin`
-  // below uses `barH` for the perpendicular axis instead of this y.
+  // below uses `barThickness` for the perpendicular axis instead of this y.
   readonly property point anchorScreenPos: {
     anchorWatcher.transform  // reactive dependency
     if (!anchorItem || !anchorWindow) return Qt.point(0, 0)
@@ -232,13 +229,13 @@ PanelWindow {
   readonly property real screenW: screen ? screen.width : 0
   readonly property real screenH: screen ? screen.height : 0
   readonly property real availableCardWidth: screenW > 0
-    ? Math.max(120, screenW - ((barPos === "left" || barPos === "right") ? barW + gap + margin : margin * 2))
+    ? Math.max(120, screenW - ((barPos === "left" || barPos === "right") ? barThickness + gap + margin : margin * 2))
     : 0
   readonly property real availableCardHeight: screenH > 0
     ? Math.max(120, pinnedBottom
-      ? screenH - barH - gap - (frameStyle ? frameInset : margin)
+      ? screenH - barThickness - gap - (frameStyle ? frameInset : margin)
       : screenH - ((barPos === "top" || barPos === "bottom")
-        ? barH + gap + ((frameStyle && barPos === "top") ? frameInset + Style.cornerRadius : margin)
+        ? barThickness + gap + ((frameStyle && barPos === "top") ? frameInset + Style.cornerRadius : margin)
         : margin * 2))
     : 0
   readonly property real verticalContentInset: padding * 2 + Border.top(borderSpec) + Border.bottom(borderSpec)
@@ -264,16 +261,21 @@ PanelWindow {
   }
 
   // Desired top-left of the card in screen coordinates. For the
-  // perpendicular axis (away-from-bar) we anchor to the bar window's edge
+  // perpendicular axis (away-from-bar) we anchor to the bar strip's edge
   // directly — not the anchor item's y/x — because mapToItem(barContent)
   // returns coordinates in the bar's content space, which can be offset
-  // from the bar surface's screen-anchored corner by internal layout
-  // (centering wrappers, padding). The bar's surface IS aligned to its
-  // anchored screen edge, so using `barW`/`barH` gives the right edge
-  // regardless of how the bar's internal widgets are positioned. For the
+  // from the strip's screen-anchored corner by internal layout (centering
+  // wrappers, padding). Since Omarchy 4.5 the bar window spans its whole
+  // screen, so its dimensions say nothing about the strip; `barThickness`
+  // (the bar's size on this screen, notch floor included) gives the strip's
+  // inner edge regardless of how the bar's internal widgets are positioned. For the
   // parallel axis (along the bar) the anchor item's reported position is
   // still consistent with the bar content origin, so it's accurate for
   // centering the card under the icon.
+  readonly property real barThickness: !bar ? 0
+    : (typeof bar.barSizeFor === "function" && screen ? bar.barSizeFor(screen.name) : bar.barSize)
+  // Bar window dimensions, only for mapping overlay coordinates into
+  // bar-window content coordinates in barPoint() below.
   readonly property real barW: anchorWindow ? anchorWindow.width : screenW
   readonly property real barH: anchorWindow ? anchorWindow.height : 0
   readonly property point cardOrigin: {
@@ -281,22 +283,22 @@ PanelWindow {
     var x = 0, y = 0
     if (centerOnBar && (barPos === "top" || barPos === "bottom")) {
       x = screenW / 2 - contentWidth / 2
-      y = barPos === "bottom" ? screenH - barH - contentHeight - gap : barH + gap
+      y = barPos === "bottom" ? screenH - barThickness - contentHeight - gap : barThickness + gap
     } else if (centerOnBar) {
-      x = barPos === "left" ? barW + gap : screenW - barW - contentWidth - gap
+      x = barPos === "left" ? barThickness + gap : screenW - barThickness - contentWidth - gap
       y = screenH / 2 - contentHeight / 2
     } else if (barPos === "bottom") {
       x = anchorScreenPos.x + anchorW / 2 - contentWidth / 2
-      y = screenH - barH - contentHeight - gap
+      y = screenH - barThickness - contentHeight - gap
     } else if (barPos === "left") {
-      x = barW + gap
+      x = barThickness + gap
       y = anchorScreenPos.y + anchorH / 2 - contentHeight / 2
     } else if (barPos === "right") {
-      x = screenW - barW - contentWidth - gap
+      x = screenW - barThickness - contentWidth - gap
       y = anchorScreenPos.y + anchorH / 2 - contentHeight / 2
     } else { // "top" (default)
       x = anchorScreenPos.x + anchorW / 2 - contentWidth / 2
-      y = barH + gap
+      y = barThickness + gap
     }
     // A pinned card ignores its icon's position along the bar. The clamp below
     // would land on the same number for `left`, but only while gapsOut and
@@ -415,8 +417,7 @@ PanelWindow {
         var target = targets[i]
         if (!target || !target.triggerPress || target.visible === false || target.opacity === 0 || !target.mapToItem) continue
         if (root.bar.targetBelongsToWindow && !root.bar.targetBelongsToWindow(target, root.anchorWindow)) continue
-        var pos = root.anchorWindow.itemPosition(target)
-        if (p.x >= pos.x && p.x <= pos.x + target.width && p.y >= pos.y && p.y <= pos.y + target.height) return target
+        if (Util.itemContainsPoint(target, root.anchorWindow.contentItem, p.x, p.y)) return target
       }
       return null
     }
@@ -515,7 +516,7 @@ PanelWindow {
     y: root.attachedEdgeJoinY
     opacity: card.opacity
     cornerRadius: root.frameJoinSize
-    frameColor: Color.popups.background
+    frameColor: Commons.Color.popups.background
     transform: Scale {
       origin.x: leftFrameJoin.width / 2
       origin.y: leftFrameJoin.height / 2
@@ -531,7 +532,7 @@ PanelWindow {
     y: root.attachedEdgeJoinY
     opacity: card.opacity
     cornerRadius: root.frameJoinSize
-    frameColor: Color.popups.background
+    frameColor: Commons.Color.popups.background
     transform: Scale {
       origin.x: rightFrameJoin.width / 2
       origin.y: rightFrameJoin.height / 2
@@ -549,7 +550,7 @@ PanelWindow {
     y: card.y
     width: root.frameInset + 2
     height: card.height
-    color: Color.popups.background
+    color: Commons.Color.popups.background
     opacity: card.opacity
   }
 
@@ -561,7 +562,7 @@ PanelWindow {
     y: root.freeEdgeJoinY
     opacity: card.opacity
     cornerRadius: root.frameJoinSize
-    frameColor: Color.popups.background
+    frameColor: Commons.Color.popups.background
     transform: Scale {
       origin.x: rightBridgeFrameJoin.width / 2
       origin.y: rightBridgeFrameJoin.height / 2
@@ -577,7 +578,7 @@ PanelWindow {
     y: card.y
     width: card.x + 2
     height: card.height
-    color: Color.popups.background
+    color: Commons.Color.popups.background
     opacity: card.opacity
   }
 
@@ -589,7 +590,7 @@ PanelWindow {
     y: root.freeEdgeJoinY
     opacity: card.opacity
     cornerRadius: root.frameJoinSize
-    frameColor: Color.popups.background
+    frameColor: Commons.Color.popups.background
     transform: Scale {
       origin.x: leftBridgeFrameJoin.width / 2
       origin.y: leftBridgeFrameJoin.height / 2
@@ -605,7 +606,7 @@ PanelWindow {
     y: root.pinnedBottom ? revealClip.height - root.contentHeight : 0
     width: root.contentWidth
     height: root.contentHeight
-    color: Color.popups.background
+    color: Commons.Color.popups.background
     // The frame look draws its own edges, so the card drops its border and
     // squares off every corner that meets the bar strip, a bridged screen edge,
     // or the bottom of the screen. The free corners keep the popup radius.

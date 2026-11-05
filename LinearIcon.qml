@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as Commons
 
 // The Linear mark, drawn as a vector shape using QtQuick.Shapes CurveRenderer
 // for razor-sharp antialiasing at any DPI or bar font scale.
@@ -8,7 +9,7 @@ Item {
   id: root
 
   property real iconSize: Style.font.icon
-  property color color: Color.foreground
+  property color color: Commons.Color.foreground
 
   width: iconSize
   height: iconSize

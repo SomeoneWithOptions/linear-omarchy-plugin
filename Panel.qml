@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Bar button + one-field popup for filing a Linear issue.
@@ -18,7 +19,7 @@ Panel {
   property string draftTitle: ""
   property string targetLabel: ""
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // PanelHero tints its meta line at 1.4; the destination line sits in the
   // same visual tier, so it uses the same value rather than inventing one.
