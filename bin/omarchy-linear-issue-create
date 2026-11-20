@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Create a Linear issue in the team and project named in config.lua, assigned
-# to its assignee if one is set, then report the result as a desktop
+# to its assignee and placed in its workflow state if those are set, then report the result as a desktop
 # notification whose click opens the ticket.
 #
 # Usage:
@@ -33,9 +33,12 @@ cfg_project_id=""
 cfg_priority=""
 cfg_assignee=""
 cfg_assignee_id=""
+cfg_state=""
+cfg_state_id=""
 team_id=""
 project_id=""
 assignee_id=""
+state_id=""
 TOKEN=""
 
 # Failures reach the user as a notification, because the caller is a bar popup
@@ -66,6 +69,8 @@ read_config() {
     put("priority", cfg.priority)
     put("assignee", cfg.assignee)
     put("assignee_id", cfg.assignee_id)
+    put("state", cfg.state)
+    put("state_id", cfg.state_id)
   ') || die "Could not read $CONFIG"
 
   local key value
@@ -78,6 +83,8 @@ read_config() {
     priority) cfg_priority=$value ;;
     assignee) cfg_assignee=$value ;;
     assignee_id) cfg_assignee_id=$value ;;
+    state) cfg_state=$value ;;
+    state_id) cfg_state_id=$value ;;
     esac
   done <<<"$out"
 
@@ -128,15 +135,21 @@ api_error() {
 #
 # The assignee rides along in the same round trip: "me" is the key's own user,
 # anything else is matched by email, the one user attribute Linear keeps unique.
+# The workflow state is matched by name inside the team, since every team has
+# its own set of states.
 lookup_ids() {
   local query payload response err
   query='query ResolveTarget($team: String!, $project: String!, $email: String!,
-                           $me: Boolean!, $byEmail: Boolean!) {
+                           $me: Boolean!, $byEmail: Boolean!,
+                           $state: String!, $byState: Boolean!) {
     teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
       nodes {
         id
         name
         projects(first: 10, filter: { name: { eqIgnoreCase: $project } }) {
+          nodes { id name }
+        }
+        states(first: 5, filter: { name: { eqIgnoreCase: $state } }) @include(if: $byState) {
           nodes { id name }
         }
       }
@@ -148,11 +161,12 @@ lookup_ids() {
   }'
 
   payload=$(jq -n --arg q "$query" --arg team "$cfg_team" --arg project "$cfg_project" \
-    --arg assignee "$cfg_assignee" '
+    --arg assignee "$cfg_assignee" --arg state "$cfg_state" '
     ($assignee | ascii_downcase) as $a
     | {query: $q, variables: {team: $team, project: $project,
         me: ($a == "me"), byEmail: ($a != "" and $a != "me"),
-        email: (if $a == "me" then "" else $assignee end)}}')
+        email: (if $a == "me" then "" else $assignee end),
+        state: $state, byState: ($state != "")}}')
 
   response=$(api "$payload") || die "Could not reach the Linear API"
   err=$(api_error "$response")
@@ -170,12 +184,19 @@ lookup_ids() {
     [[ -n $assignee_id ]] || die "No Linear user with email \"$cfg_assignee\""
   fi
 
+  if [[ -n $cfg_state ]]; then
+    state_id=$(jq -r '.data.teams.nodes[0].states.nodes[0].id // empty' <<<"$response")
+    [[ -n $state_id ]] || die "No workflow state named \"$cfg_state\" in team \"$cfg_team\""
+  fi
+
   mkdir -p "$CACHE_DIR"
   jq -n --arg team "$cfg_team" --arg project "$cfg_project" \
     --arg team_id "$team_id" --arg project_id "$project_id" \
     --arg assignee "$cfg_assignee" --arg assignee_id "$assignee_id" \
+    --arg state "$cfg_state" --arg state_id "$state_id" \
     '{team: $team, project: $project, team_id: $team_id, project_id: $project_id,
-      assignee: $assignee, assignee_id: $assignee_id}' >"$CACHE.tmp"
+      assignee: $assignee, assignee_id: $assignee_id,
+      state: $state, state_id: $state_id}' >"$CACHE.tmp"
   chmod 600 "$CACHE.tmp"
   mv "$CACHE.tmp" "$CACHE"
 }
@@ -188,21 +209,28 @@ resolve_ids() {
     assignee_id=$cfg_assignee_id
     cfg_assignee=""
   fi
+  # Same for a pinned state_id.
+  if [[ -n $cfg_state_id ]]; then
+    state_id=$cfg_state_id
+    cfg_state=""
+  fi
 
-  if [[ -n $cfg_team_id && -n $cfg_project_id && ( -n $assignee_id || -z $cfg_assignee ) ]]; then
+  if [[ -n $cfg_team_id && -n $cfg_project_id && -z $cfg_assignee && -z $cfg_state ]]; then
     team_id=$cfg_team_id
     project_id=$cfg_project_id
     return
   fi
 
   if [[ -f $CACHE ]] &&
-    [[ $(jq -r --arg t "$cfg_team" --arg p "$cfg_project" --arg a "$cfg_assignee" \
-      'if .team == $t and .project == $p and (.assignee // "") == $a
+    [[ $(jq -r --arg t "$cfg_team" --arg p "$cfg_project" --arg a "$cfg_assignee" --arg s "$cfg_state" \
+      'if .team == $t and .project == $p and (.assignee // "") == $a and (.state // "") == $s
        then "hit" else "miss" end' "$CACHE" 2>/dev/null) == hit ]]; then
     team_id=$(jq -r '.team_id // empty' "$CACHE")
     project_id=$(jq -r '.project_id // empty' "$CACHE")
     [[ -n $cfg_assignee ]] && assignee_id=$(jq -r '.assignee_id // empty' "$CACHE")
-    [[ -n $team_id && -n $project_id && ( -z $cfg_assignee || -n $assignee_id ) ]] && return 0
+    [[ -n $cfg_state ]] && state_id=$(jq -r '.state_id // empty' "$CACHE")
+    [[ -n $team_id && -n $project_id && ( -z $cfg_assignee || -n $assignee_id ) &&
+      ( -z $cfg_state || -n $state_id ) ]] && return 0
   fi
 
   lookup_ids
@@ -220,12 +248,14 @@ create_issue() {
     --arg team "$team_id" \
     --arg project "$project_id" \
     --arg assignee "$assignee_id" \
+    --arg state "$state_id" \
     --argjson priority "${cfg_priority:-null}" '
     { query: $q,
       variables: { input: (
         { title: $title, teamId: $team, projectId: $project }
         + (if $priority == null then {} else { priority: $priority } end)
         + (if $assignee == "" then {} else { assigneeId: $assignee } end)
+        + (if $state == "" then {} else { stateId: $state } end)
       ) } }')
 
   response=$(api "$payload") || die "Could not reach the Linear API"

@@ -19,4 +19,9 @@ return {
   -- Assign new issues to "me" (the API key's user) or to a user's email.
   -- assignee = "me",
   -- assignee_id = "…",   -- pin the user's UUID to skip resolution
+
+  -- Workflow state new issues start in, by name. Unset means the team's
+  -- default, usually Backlog. List them with: omarchy-linear-setup states --team "Personal"
+  -- state = "Todo",
+  -- state_id = "…",      -- pin the state's UUID to skip resolution
 }

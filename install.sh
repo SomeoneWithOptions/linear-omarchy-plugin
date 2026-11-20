@@ -685,7 +685,7 @@ store_key() {
 pick_target() {
   step "Issue target"
 
-  local teams team projects project priority assignee email existing
+  local teams team projects project priority assignee email states state existing
   # Asking Linear for the team list costs a round trip and rewriting the config
   # costs a backup file, so neither happens when the target is already usable.
   existing=$(current_target) || existing=""
@@ -737,6 +737,20 @@ Someone else, by email
 CHOICES
 ) || die "Cancelled"
 
+  # States belong to the team, so they are read only once the team is known.
+  # A failure here is not worth aborting over: the team default still works.
+  state="Leave unset (team default)"
+  if states=$("$SETUP" states --team "$team" --json); then
+    state=$({
+      echo "Leave unset (team default)"
+      jq -r '.[] | select(.type != "completed" and .type != "canceled"
+                          and .type != "duplicate") | .name' <<<"$states"
+    } | choose "Which status do new issues start in?" "Leave unset (team default)") ||
+      die "Cancelled"
+  else
+    warn "Could not read the workflow states of $team; leaving the status unset."
+  fi
+
   local args=(use --team "$team" --project "$project")
   case $priority in
   "No priority") args+=(--priority 0) ;;
@@ -753,6 +767,7 @@ CHOICES
     args+=(--assignee "$email")
     ;;
   esac
+  [[ $state == "Leave unset (team default)" ]] || args+=(--state "$state")
 
   "$SETUP" "${args[@]}" || die "Could not write the config"
   CHANGED=1

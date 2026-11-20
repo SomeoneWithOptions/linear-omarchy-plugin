@@ -35,7 +35,7 @@ when you are developing against it.
 
 The installer asks for every preference rather than assuming one: bar section,
 whether to link the commands into `~/.local/bin`, API key, which team and
-project to file into, the default priority and assignee, the panel corner,
+project to file into, the default priority, assignee and status, the panel corner,
 frame styling, and the keybind. Teams and projects are read from your own
 Linear account and picked from a list, so the target cannot be a name Linear
 does not have. Changes are applied step by step, so cancelling preserves
@@ -88,7 +88,8 @@ ln -s ~/.config/omarchy/plugins/andres.linear/bin/omarchy-linear-issue-create ~/
 
 omarchy-linear-setup key
 omarchy-linear-setup list
-omarchy-linear-setup use --team "Personal" --project "Work" --priority 3
+omarchy-linear-setup states --team "Personal"
+omarchy-linear-setup use --team "Personal" --project "Work" --priority 3 --state Todo
 ```
 
 Add the keybind to `~/.config/hypr/bindings.lua`:
@@ -164,6 +165,10 @@ return {
   -- Optional assignee: "me" (the API key's user) or a user's email.
   -- assignee = "me",
   -- assignee_id = "…",
+
+  -- Optional starting status, by workflow state name. Unset: team default.
+  -- state = "Todo",
+  -- state_id = "…",
 }
 ```
 
@@ -172,6 +177,12 @@ Linear's API only accepts an assignee as a user UUID. The plugin resolves
 Linear keeps unique; display names are not — and caches the UUID alongside the
 team and project. Set it with `omarchy-linear-setup use --team "Team"
 --project "Project" --assignee me` (or `--assignee someone@example.com`).
+
+Without a `state`, Linear puts new issues in the team's default status, which
+is usually Backlog. Set one to start them elsewhere, e.g. `--state Todo` on
+`omarchy-linear-setup use`. States are per team; `omarchy-linear-setup states
+--team "Team"` lists them. The name is matched case-insensitively within the
+team and resolved to a UUID once, like the assignee.
 
 Names are the source of truth. Resolved UUIDs are cached in
 `~/.local/state/omarchy/linear/ids.json`, keyed by those names, so renaming a

@@ -6,8 +6,11 @@
 #   omarchy-linear-setup key                  store the API key in the keyring
 #   omarchy-linear-setup check                verify the key and show the account
 #   omarchy-linear-setup list [--json]        list teams and their projects
+#   omarchy-linear-setup states --team <team> [--json]
+#                                             list a team's workflow states
 #   omarchy-linear-setup use --team <team> --project <project>
 #                            [--priority 0-4] [--assignee me|<email>]
+#                            [--state <state>]
 #                                             write config.lua for that target
 #
 # Kept separate from omarchy-linear-issue-create so the hot path the bar calls
@@ -47,7 +50,7 @@ backup_file() { # $1 = path
 }
 
 usage() {
-  sed -n '3,11p' "$0" | sed 's/^# \?//'
+  sed -n '3,14p' "$0" | sed 's/^# \?//'
 }
 
 read_token() {
@@ -153,8 +156,53 @@ cmd_list() {
         ""' <<<"$response"
 }
 
+# States are per team, so they are listed for one team rather than folded into
+# the teams×projects query, which is already close to Linear's complexity cap.
+cmd_states() {
+  local team="" as_json=0
+  while (($# > 0)); do
+    case $1 in
+    --team)
+      team=${2-}
+      [[ -n $team && $team != --* ]] || die "--team takes a team name"
+      shift 2
+      ;;
+    --json)
+      as_json=1
+      shift
+      ;;
+    *) die "Unknown option: $1" ;;
+    esac
+  done
+  [[ -n $team ]] || die "Usage: $(basename "$0") states --team <team> [--json]"
+
+  TOKEN=$(read_token)
+  local response
+  response=$(query 'query States($team: String!) {
+    teams(first: 1, filter: { name: { eqIgnoreCase: $team } }) {
+      nodes { states(first: 50) { nodes { name type position } } }
+    }
+  }' "$(jq -n --arg team "$team" '{team: $team}')")
+
+  [[ $(jq '.data.teams.nodes | length' <<<"$response") -gt 0 ]] ||
+    die "No team named \"$team\". Run: $(basename "$0") list"
+
+  # Ordered the way Linear's board shows them: by workflow stage, then position.
+  local states
+  states=$(jq -c '.data.teams.nodes[0].states.nodes
+    | sort_by(.type as $t
+              | (["triage","backlog","unstarted","started","completed","canceled","duplicate"]
+                 | index($t) // 99), .position)' <<<"$response")
+
+  if ((as_json)); then
+    printf '%s\n' "$states"
+    return
+  fi
+  jq -r '.[] | "\(.name)  ·  \(.type)"' <<<"$states"
+}
+
 cmd_use() {
-  local team="" project="" priority="" assignee=""
+  local team="" project="" priority="" assignee="" state=""
 
   while (($# > 0)); do
     case $1 in
@@ -181,6 +229,11 @@ cmd_use() {
       [[ ${assignee,,} == me ]] && assignee=me
       shift 2
       ;;
+    --state)
+      state=${2-}
+      [[ -n $state && $state != --* ]] || die "--state takes a workflow state name, e.g. Todo"
+      shift 2
+      ;;
     -*) die "Unknown option: $1" ;;
     *)
       # The positional form was dropped; say what replaced it rather than
@@ -191,17 +244,21 @@ cmd_use() {
   done
 
   [[ -n $team && -n $project ]] ||
-    die "Usage: $(basename "$0") use --team <team> --project <project> [--priority 0-4] [--assignee me|<email>]"
+    die "Usage: $(basename "$0") use --team <team> --project <project> [--priority 0-4] [--assignee me|<email>] [--state <state>]"
 
   TOKEN=$(read_token)
-  local response team_id project_id assignee_id=""
+  local response team_id project_id assignee_id="" state_id=""
   response=$(query 'query ResolveTarget($team: String!, $project: String!, $email: String!,
-                                        $me: Boolean!, $byEmail: Boolean!) {
+                                        $me: Boolean!, $byEmail: Boolean!,
+                                        $state: String!, $byState: Boolean!) {
     teams(first: 5, filter: { name: { eqIgnoreCase: $team } }) {
       nodes {
         id
         name
         projects(first: 10, filter: { name: { eqIgnoreCase: $project } }) {
+          nodes { id name }
+        }
+        states(first: 5, filter: { name: { eqIgnoreCase: $state } }) @include(if: $byState) {
           nodes { id name }
         }
       }
@@ -210,10 +267,12 @@ cmd_use() {
     users(first: 1, filter: { email: { eqIgnoreCase: $email } }) @include(if: $byEmail) {
       nodes { id }
     }
-  }' "$(jq -n --arg team "$team" --arg project "$project" --arg assignee "$assignee" '
+  }' "$(jq -n --arg team "$team" --arg project "$project" --arg assignee "$assignee" \
+    --arg state "$state" '
     {team: $team, project: $project,
      me: ($assignee == "me"), byEmail: ($assignee != "" and $assignee != "me"),
-     email: (if $assignee == "me" then "" else $assignee end)}')")
+     email: (if $assignee == "me" then "" else $assignee end),
+     state: $state, byState: ($state != "")}')")
 
   team_id=$(jq -r '.data.teams.nodes[0].id // empty' <<<"$response")
   [[ -n $team_id ]] || die "No team named \"$team\". Run: $(basename "$0") list"
@@ -226,6 +285,14 @@ cmd_use() {
     [[ -n $assignee_id ]] || die "No Linear user with email \"$assignee\""
   fi
 
+  if [[ -n $state ]]; then
+    state_id=$(jq -r '.data.teams.nodes[0].states.nodes[0].id // empty' <<<"$response")
+    [[ -n $state_id ]] ||
+      die "No workflow state named \"$state\" in team \"$team\". Run: $(basename "$0") states --team \"$team\""
+    # Store the name as Linear spells it, so the cache key matches next time.
+    state=$(jq -r '.data.teams.nodes[0].states.nodes[0].name' <<<"$response")
+  fi
+
   local priority_line="  -- priority = 3,"
   [[ -z $priority ]] || priority_line="  priority = $priority,"
 
@@ -233,6 +300,12 @@ cmd_use() {
   if [[ -n $assignee ]]; then
     assignee_line="  assignee = \"$assignee\","
     assignee_id_line="  -- assignee_id = \"$assignee_id\","
+  fi
+
+  local state_line='  -- state = "Todo",' state_id_line='  -- state_id = "…",'
+  if [[ -n $state ]]; then
+    state_line="  state = \"$state\","
+    state_id_line="  -- state_id = \"$state_id\","
   fi
 
   # Rendered first and compared, so re-running with the same target neither
@@ -257,6 +330,11 @@ $priority_line
   -- Assign new issues to "me" (the API key's user) or a user's email.
 $assignee_line
 $assignee_id_line
+
+  -- Workflow state new issues start in, by name (e.g. "Todo"). Unset means
+  -- the team's default, usually Backlog.
+$state_line
+$state_id_line
 }
 LUA
   )
@@ -280,13 +358,15 @@ LUA
   jq -n --arg team "$team" --arg project "$project" \
     --arg team_id "$team_id" --arg project_id "$project_id" \
     --arg assignee "$assignee" --arg assignee_id "$assignee_id" \
+    --arg state "$state" --arg state_id "$state_id" \
     '{team: $team, project: $project, team_id: $team_id, project_id: $project_id,
-      assignee: $assignee, assignee_id: $assignee_id}' \
+      assignee: $assignee, assignee_id: $assignee_id,
+      state: $state, state_id: $state_id}' \
     >"$CACHE_DIR/ids.json.tmp"
   chmod 600 "$CACHE_DIR/ids.json.tmp"
   mv "$CACHE_DIR/ids.json.tmp" "$CACHE_DIR/ids.json"
 
-  echo "Target: $team › $project${assignee:+ · assigned to $assignee}"
+  echo "Target: $team › $project${assignee:+ · assigned to $assignee}${state:+ · starts in $state}"
 }
 
 case ${1-} in
@@ -295,6 +375,10 @@ check) cmd_check ;;
 list)
   shift
   cmd_list "$@"
+  ;;
+states)
+  shift
+  cmd_states "$@"
   ;;
 use)
   shift
